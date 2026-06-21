@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "exactOptionalPropertyTypes": true,
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "paths": {
+      "@pccbot/shared": ["../../packages/shared/src/index.d.ts"]
+    },
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["config/**/*.ts", "src/**/*.ts"]
+}

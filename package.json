@@ -1,0 +1,66 @@
+{
+  "name": "pccbot-discord-platform",
+  "version": "1.0.0",
+  "description": "Purdue Photography Club's always-on Discord sidekick for server signals, site health, and web-to-Discord updates.",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build:gateway && npm run build:worker",
+    "build:gateway": "npm run build -w @pccbot/discord-gateway",
+    "build:worker": "npm run build -w @pccbot/discord-worker",
+    "check": "npm run typecheck && npm run lint && npm run build && npm run doctor",
+    "deploy:worker": "npm run deploy -w @pccbot/discord-worker",
+    "dev:gateway": "npm run dev -w @pccbot/discord-gateway",
+    "dev:worker": "npm run dev -w @pccbot/discord-worker",
+    "doctor": "npx react-doctor@latest --verbose --no-score --yes",
+    "fix": "eslint . --fix",
+    "gateway:prepare-deploy": "sh scripts/prepare-gateway-deploy.sh",
+    "lint": "eslint .",
+    "register": "npm run register -w @pccbot/discord-worker",
+    "register:global": "npm run register:global -w @pccbot/discord-worker",
+    "register:guild": "npm run register:guild -w @pccbot/discord-worker",
+    "start:gateway": "npm run start -w @pccbot/discord-gateway",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "verify": "npm run check",
+    "worker:dev": "npm run dev:worker",
+    "worker:deploy": "npm run deploy:worker"
+  },
+  "reactDoctor": {
+    "ignore": {
+      "files": ["dist/**", "apps/**/dist/**", ".wrangler/**", "apps/**/.wrangler/**"]
+    }
+  },
+  "keywords": [],
+  "author": "Justin Beckwith <justin.beckwith@gmail.com>",
+  "license": "MIT",
+  "overrides": {
+    "@pccbot/discord-gateway": {
+      "discord.js": {
+        "@discordjs/rest": {
+          "undici": "6.27.0"
+        },
+        "undici": "6.27.0"
+      }
+    },
+    "esbuild": "0.28.1",
+    "js-yaml": "4.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260508.1",
+    "@eslint/js": "^9.1.1",
+    "@types/node": "^25.6.2",
+    "eslint": "^9.1.0",
+    "eslint-config-prettier": "^10.0.2",
+    "eslint-plugin-prettier": "^5.1.3",
+    "globals": "^16.0.0",
+    "prettier": "^3.2.5",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.2",
+    "wrangler": "^4.103.0"
+  }
+}

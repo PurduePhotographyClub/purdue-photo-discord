@@ -1,0 +1,22 @@
+{
+  "name": "@pccbot/discord-gateway",
+  "version": "1.0.0",
+  "description": "Lightweight discord.js Gateway presence and event forwarder for Purdue Photography Club.",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "node --import tsx src/index.ts",
+    "start": "node --enable-source-maps dist/index.js",
+    "start:bun": "bun src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@pccbot/shared": "file:../../packages/shared",
+    "discord.js": "^14.26.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

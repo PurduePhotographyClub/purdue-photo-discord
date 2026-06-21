@@ -1,0 +1,23 @@
+name = "ppc-bot"
+main = "./src/index.ts"
+compatibility_date = "2026-06-02"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+head_sampling_rate = 0.1
+
+[vars]
+WEBSITE_URL = "https://purduephotoclub.org"
+WIKI_URL = "https://wiki.purduephotoclub.org"
+# Bounded in code to 1-7 days. Keep in sync with the API Worker.
+DISCORD_MIN_ACCOUNT_AGE_DAYS = "1"
+
+[[services]]
+binding = "API_WORKER"
+service = "purdue-photography-club-api"
+
+[[kv_namespaces]]
+binding = "REQUEST_NONCES"
+id = "ppc-auth"
+preview_id = "00000000000000000000000000000000"

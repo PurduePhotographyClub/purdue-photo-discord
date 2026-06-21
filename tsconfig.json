@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "apps/discord-worker" },
+    { "path": "apps/discord-gateway" },
+    { "path": "packages/shared" }
+  ]
+}

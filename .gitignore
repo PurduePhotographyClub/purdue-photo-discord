@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+coverage
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+.wrangler
+dist
+deploy/discord-gateway

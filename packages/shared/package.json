@@ -1,0 +1,16 @@
+{
+  "name": "@pccbot/shared",
+  "version": "1.0.0",
+  "description": "Shared Discord bot types for Worker and Gateway packages.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/empty.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}
