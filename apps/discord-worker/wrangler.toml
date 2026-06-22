@@ -2,6 +2,7 @@ name = "ppc-bot"
 main = "./src/index.ts"
 compatibility_date = "2026-06-02"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = false
 
 [observability]
 enabled = true
@@ -17,7 +18,10 @@ DISCORD_MIN_ACCOUNT_AGE_DAYS = "1"
 binding = "API_WORKER"
 service = "purdue-photography-club-api"
 
+[[routes]]
+pattern = "discord.purduephotoclub.org"
+custom_domain = true
+
 [[kv_namespaces]]
 binding = "REQUEST_NONCES"
-id = "ppc-auth"
-preview_id = "00000000000000000000000000000000"
+id = "fe6f1706094840ddabd1288b0b79c306"
