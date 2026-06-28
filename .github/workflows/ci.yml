@@ -52,7 +52,7 @@ jobs:
 
       - name: Upload worker deploy artifact
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: discord-worker-dist
           path: apps/discord-worker/dist
