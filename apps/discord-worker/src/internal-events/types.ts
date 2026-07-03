@@ -219,6 +219,7 @@ export interface DiscordServerVerificationCompleteInternalEvent {
   applicationId?: string;
   discordId: string;
   interactionToken?: string;
+  nickname?: string;
   type: 'website.discord.server_verification.complete';
 }
 

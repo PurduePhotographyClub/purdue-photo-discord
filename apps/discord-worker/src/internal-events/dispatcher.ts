@@ -267,7 +267,9 @@ async function runMemberRoleEvent(event: MemberRolesInternalEvent, env: Env) {
   }
 
   if (event.type === 'website.discord.server_verification.complete') {
-    return completeDiscordServerVerification(env, event.discordId);
+    return completeDiscordServerVerification(env, event.discordId, {
+      nickname: event.nickname,
+    });
   }
 
   return syncDiscordMemberRoles(env, buildMemberRolesSyncInput(event));

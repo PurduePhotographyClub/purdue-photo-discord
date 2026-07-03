@@ -708,11 +708,13 @@ function parseMemberRolesEvent(
   if (type === 'website.discord.server_verification.complete') {
     const applicationId = readString(payload, 'applicationId');
     const interactionToken = readString(payload, 'interactionToken');
+    const nickname = readString(payload, 'nickname');
 
     return {
       discordId,
       ...(applicationId ? { applicationId } : {}),
       ...(interactionToken ? { interactionToken } : {}),
+      ...(nickname ? { nickname } : {}),
       type,
     };
   }
