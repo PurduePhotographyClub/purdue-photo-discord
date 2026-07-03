@@ -17,6 +17,8 @@ export interface SyncDiscordMemberRolesResult {
   addedRoleIds: string[];
   failedRoleIds: string[];
   inGuild: boolean;
+  nicknameUpdateReason?: DiscordNicknameUpdateFailureReason;
+  nicknameUpdated?: boolean;
   removedRoleIds: string[];
 }
 
@@ -37,8 +39,32 @@ interface DiscordGuildMemberResponse {
   };
 }
 
+interface DiscordGuildRoleResponse {
+  id?: Snowflake;
+  permissions?: string;
+  position?: number;
+}
+
+type DiscordNicknameUpdateFailureReason =
+  | 'discord_api_error'
+  | 'missing_access'
+  | 'missing_manage_nicknames'
+  | 'missing_member'
+  | 'missing_permissions'
+  | 'role_hierarchy'
+  | 'unknown_error';
+
+interface DiscordNicknameUpdateResult {
+  reason?: DiscordNicknameUpdateFailureReason;
+  updated: boolean;
+}
+
+const DISCORD_MISSING_ACCESS_CODE = 50001;
+const DISCORD_MISSING_PERMISSIONS_CODE = 50013;
 const DISCORD_UNKNOWN_MEMBER_CODE = 10007;
 const DISCORD_UNKNOWN_ROLE_CODE = 10011;
+const DISCORD_PERMISSION_ADMINISTRATOR = 1n << 3n;
+const DISCORD_PERMISSION_MANAGE_NICKNAMES = 1n << 27n;
 const logger = createLogger('discord-member-role-service');
 const MANAGED_ROLE_IDS = uniqueRoleIds([
   // Only these website-owned roles are added or removed, so unrelated Discord roles are untouched.
@@ -141,6 +167,7 @@ export async function completeDiscordServerVerification(
   const addedRoleIds: string[] = [];
   const removedRoleIds: string[] = [];
   const nickname = normalizeDiscordVerificationNickname(options.nickname);
+  let nicknameUpdate: DiscordNicknameUpdateResult = { updated: false };
 
   if (!existingRoleIds.has(verifiedRoleId)) {
     await discordApiRequest(
@@ -165,28 +192,23 @@ export async function completeDiscordServerVerification(
   }
 
   if (nickname) {
-    await updateDiscordMemberNickname(
+    nicknameUpdate = await updateDiscordMemberNickname(
       env,
       guildId,
       trimmedDiscordId,
       nickname,
-    ).catch((error) => {
-      logger.warn('Discord verification nickname update failed.', {
-        discordErrorCode:
-          error instanceof DiscordApiError
-            ? readDiscordErrorCode(error.details)
-            : undefined,
-        discordId: trimmedDiscordId,
-        error,
-        status: error instanceof DiscordApiError ? error.status : undefined,
-      });
-    });
+      member,
+    );
   }
 
   return {
     addedRoleIds,
     failedRoleIds: [],
     inGuild: true,
+    ...(nickname ? { nicknameUpdated: nicknameUpdate.updated } : {}),
+    ...(nicknameUpdate.reason
+      ? { nicknameUpdateReason: nicknameUpdate.reason }
+      : {}),
     removedRoleIds,
   };
 }
@@ -418,11 +440,159 @@ async function updateDiscordMemberNickname(
   guildId: string,
   discordId: string,
   nickname: string,
+  targetMember: DiscordGuildMemberResponse,
+): Promise<DiscordNicknameUpdateResult> {
+  try {
+    await discordApiRequest(env, `/guilds/${guildId}/members/${discordId}`, {
+      body: JSON.stringify({ nick: nickname }),
+      method: 'PATCH',
+    });
+
+    return { updated: true };
+  } catch (error) {
+    const result = await resolveDiscordNicknameUpdateFailure(
+      env,
+      guildId,
+      targetMember,
+      error,
+    );
+
+    logger.warn('Discord verification nickname update failed.', {
+      discordErrorCode:
+        error instanceof DiscordApiError
+          ? readDiscordErrorCode(error.details)
+          : undefined,
+      discordId,
+      error,
+      reason: result.reason,
+      status: error instanceof DiscordApiError ? error.status : undefined,
+    });
+
+    return result;
+  }
+}
+
+async function resolveDiscordNicknameUpdateFailure(
+  env: Env,
+  guildId: string,
+  targetMember: DiscordGuildMemberResponse,
+  error: unknown,
+): Promise<DiscordNicknameUpdateResult> {
+  if (!(error instanceof DiscordApiError)) {
+    return { reason: 'unknown_error', updated: false };
+  }
+
+  const discordErrorCode = readDiscordErrorCode(error.details);
+  if (discordErrorCode === DISCORD_UNKNOWN_MEMBER_CODE) {
+    return { reason: 'missing_member', updated: false };
+  }
+  if (discordErrorCode === DISCORD_MISSING_ACCESS_CODE) {
+    return { reason: 'missing_access', updated: false };
+  }
+  if (discordErrorCode === DISCORD_MISSING_PERMISSIONS_CODE) {
+    const reason = await resolveNicknamePermissionFailureReason(
+      env,
+      guildId,
+      targetMember,
+    ).catch((): DiscordNicknameUpdateFailureReason => 'missing_permissions');
+
+    return { reason, updated: false };
+  }
+
+  return { reason: 'discord_api_error', updated: false };
+}
+
+async function resolveNicknamePermissionFailureReason(
+  env: Env,
+  guildId: string,
+  targetMember: DiscordGuildMemberResponse,
+): Promise<DiscordNicknameUpdateFailureReason> {
+  const botDiscordId = env.DISCORD_APPLICATION_ID?.trim();
+  if (!botDiscordId) {
+    return 'missing_permissions';
+  }
+
+  const [botMember, roles] = await Promise.all([
+    getGuildMember(env, guildId, botDiscordId),
+    getGuildRoles(env, guildId),
+  ]);
+  if (!botMember) {
+    return 'missing_permissions';
+  }
+
+  const botPermissions = getGuildMemberPermissions(guildId, botMember, roles);
+  if (!hasPermission(botPermissions, DISCORD_PERMISSION_MANAGE_NICKNAMES)) {
+    return 'missing_manage_nicknames';
+  }
+
+  const botTopRolePosition = getHighestRolePosition(
+    botMember.roles ?? [],
+    roles,
+  );
+  const targetTopRolePosition = getHighestRolePosition(
+    targetMember.roles ?? [],
+    roles,
+  );
+
+  return targetTopRolePosition >= botTopRolePosition
+    ? 'role_hierarchy'
+    : 'missing_permissions';
+}
+
+async function getGuildRoles(env: Env, guildId: string) {
+  return discordApiRequest<DiscordGuildRoleResponse[]>(
+    env,
+    `/guilds/${guildId}/roles`,
+  );
+}
+
+function getGuildMemberPermissions(
+  guildId: string,
+  member: DiscordGuildMemberResponse,
+  roles: readonly DiscordGuildRoleResponse[],
 ) {
-  await discordApiRequest(env, `/guilds/${guildId}/members/${discordId}`, {
-    body: JSON.stringify({ nick: nickname }),
-    method: 'PATCH',
-  });
+  const memberRoleIds = new Set([guildId, ...(member.roles ?? [])]);
+  return roles.reduce((permissions, role) => {
+    if (!role.id || !memberRoleIds.has(role.id)) {
+      return permissions;
+    }
+
+    return permissions | parseDiscordPermissionBits(role.permissions);
+  }, 0n);
+}
+
+function getHighestRolePosition(
+  roleIds: readonly string[],
+  roles: readonly DiscordGuildRoleResponse[],
+) {
+  const roleIdSet = new Set(roleIds);
+  return roles.reduce((highestPosition, role) => {
+    if (!role.id || !roleIdSet.has(role.id)) {
+      return highestPosition;
+    }
+
+    return Math.max(highestPosition, role.position ?? 0);
+  }, 0);
+}
+
+function parseDiscordPermissionBits(value: string | undefined) {
+  if (!value) {
+    return 0n;
+  }
+
+  try {
+    return BigInt(value);
+  } catch {
+    return 0n;
+  }
+}
+
+function hasPermission(permissions: bigint, permission: bigint) {
+  return (
+    (permissions & DISCORD_PERMISSION_ADMINISTRATOR) ===
+      DISCORD_PERMISSION_ADMINISTRATOR ||
+    (permissions & permission) === permission
+  );
 }
 
 async function updateDiscordMemberRoles(
