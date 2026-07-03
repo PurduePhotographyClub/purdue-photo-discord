@@ -25,6 +25,10 @@ export interface WebsiteStaffRoleResolveResult {
   websiteRole: 'admin' | 'officer' | null;
 }
 
+interface CompleteDiscordServerVerificationOptions {
+  nickname?: string | null | undefined;
+}
+
 interface DiscordGuildMemberResponse {
   roles?: Snowflake[];
   user?: {
@@ -107,6 +111,7 @@ export async function addDiscordUnverifiedRole(
 export async function completeDiscordServerVerification(
   env: Env,
   discordId: string,
+  options: CompleteDiscordServerVerificationOptions = {},
 ): Promise<SyncDiscordMemberRolesResult> {
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
   const trimmedDiscordId = discordId.trim();
@@ -133,6 +138,11 @@ export async function completeDiscordServerVerification(
   const existingRoleIds = new Set(member.roles ?? []);
   const addedRoleIds: string[] = [];
   const removedRoleIds: string[] = [];
+  const nickname = normalizeDiscordVerificationNickname(options.nickname);
+
+  if (nickname) {
+    await updateDiscordMemberNickname(env, guildId, trimmedDiscordId, nickname);
+  }
 
   if (!existingRoleIds.has(verifiedRoleId)) {
     await discordApiRequest(
@@ -162,6 +172,14 @@ export async function completeDiscordServerVerification(
     inGuild: true,
     removedRoleIds,
   };
+}
+
+function normalizeDiscordVerificationNickname(
+  nickname: string | null | undefined,
+) {
+  const normalized =
+    nickname?.normalize('NFKC').replace(/\s+/g, ' ').trim() ?? '';
+  return normalized ? normalized.slice(0, 32) : null;
 }
 
 export async function syncDiscordMemberRoles(
@@ -376,6 +394,18 @@ async function updateDiscordMemberRole(
 
     throw error;
   }
+}
+
+async function updateDiscordMemberNickname(
+  env: Env,
+  guildId: string,
+  discordId: string,
+  nickname: string,
+) {
+  await discordApiRequest(env, `/guilds/${guildId}/members/${discordId}`, {
+    body: JSON.stringify({ nick: nickname }),
+    method: 'PATCH',
+  });
 }
 
 async function updateDiscordMemberRoles(
