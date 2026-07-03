@@ -3,6 +3,7 @@ import { discordApiRequest } from '../discord/api';
 import type { Env, Snowflake } from '../discord/types';
 import { BadRequestError, DiscordApiError } from '../utils/errors';
 import { getRequiredEnv } from '../utils/env';
+import { createLogger } from '../utils/logger';
 
 type MembershipTier = 'facilities' | 'member';
 
@@ -38,6 +39,7 @@ interface DiscordGuildMemberResponse {
 
 const DISCORD_UNKNOWN_MEMBER_CODE = 10007;
 const DISCORD_UNKNOWN_ROLE_CODE = 10011;
+const logger = createLogger('discord-member-role-service');
 const MANAGED_ROLE_IDS = uniqueRoleIds([
   // Only these website-owned roles are added or removed, so unrelated Discord roles are untouched.
   DISCORD_ROLE_IDS.websiteVerified,
@@ -140,10 +142,6 @@ export async function completeDiscordServerVerification(
   const removedRoleIds: string[] = [];
   const nickname = normalizeDiscordVerificationNickname(options.nickname);
 
-  if (nickname) {
-    await updateDiscordMemberNickname(env, guildId, trimmedDiscordId, nickname);
-  }
-
   if (!existingRoleIds.has(verifiedRoleId)) {
     await discordApiRequest(
       env,
@@ -164,6 +162,25 @@ export async function completeDiscordServerVerification(
       { method: 'DELETE' },
     );
     removedRoleIds.push(unverifiedRoleId);
+  }
+
+  if (nickname) {
+    await updateDiscordMemberNickname(
+      env,
+      guildId,
+      trimmedDiscordId,
+      nickname,
+    ).catch((error) => {
+      logger.warn('Discord verification nickname update failed.', {
+        discordErrorCode:
+          error instanceof DiscordApiError
+            ? readDiscordErrorCode(error.details)
+            : undefined,
+        discordId: trimmedDiscordId,
+        error,
+        status: error instanceof DiscordApiError ? error.status : undefined,
+      });
+    });
   }
 
   return {
