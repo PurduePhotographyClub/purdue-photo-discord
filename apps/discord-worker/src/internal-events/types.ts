@@ -203,6 +203,10 @@ export interface FilmRequestReviewInternalEvent {
   type: 'website.film.request.review';
 }
 
+export interface PhotographerRequestExpirySweepInternalEvent {
+  type: 'website.photographer_request.expired_sweep';
+}
+
 export interface DiscordMemberRolesSyncInternalEvent {
   discordId: string;
   membershipExpired?: boolean;
@@ -282,6 +286,10 @@ export type ParsedInternalEvent =
   | {
       event: FilmRequestReviewInternalEvent;
       kind: 'filmRequestReview';
+    }
+  | {
+      event: PhotographerRequestExpirySweepInternalEvent;
+      kind: 'photographerRequestExpirySweep';
     }
   | {
       event: MemberRolesInternalEvent;

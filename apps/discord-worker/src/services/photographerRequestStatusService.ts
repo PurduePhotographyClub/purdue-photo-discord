@@ -9,11 +9,17 @@ import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import { editDiscordMessage } from './discordMessageService';
 import { createLogger } from '../utils/logger';
 
-type PhotographerRequestStatus = 'OPEN' | 'REACHED' | 'ACCEPTED' | 'CANCELLED';
+type PhotographerRequestStatus =
+  | 'OPEN'
+  | 'REACHED'
+  | 'ACCEPTED'
+  | 'CANCELLED'
+  | 'EXPIRED';
 
 interface DiscordMessageResponse {
   content?: string;
   embeds?: DiscordEmbed[];
+  id?: string;
 }
 
 interface DiscordUserResponse {
@@ -36,9 +42,29 @@ interface ReactionParticipant {
   roles: string[];
 }
 
+export interface PhotographerRequestExpirySweepOptions {
+  channelIds?: readonly string[];
+  maxPagesPerChannel?: number;
+  now?: Date;
+}
+
+export interface PhotographerRequestExpirySweepResult {
+  channels: number;
+  expired: number;
+  failed: number;
+  scanned: number;
+  skipped: number;
+}
+
 const logger = createLogger('photographer-requests');
 
 const PHOTOGRAPHER_REQUEST_FOOTER = 'PPC photographer request';
+const PHOTOGRAPHER_REQUEST_PAGE_SIZE = 100;
+const DEFAULT_EXPIRY_SWEEP_MAX_PAGES = 3;
+const MAX_EXPIRY_SWEEP_PAGES = 10;
+const CLUB_TIME_ZONE = 'America/Indiana/Indianapolis';
+const EXPIRED_NOTICE =
+  'This job has expired, but you can still contact the owner.';
 const EYES_EMOJI = '👀';
 const CAMERA_EMOJI = '📸';
 const CANCEL_EMOJI = '❌';
@@ -47,6 +73,7 @@ const STATUS_EMOJIS = new Set([EYES_EMOJI, CAMERA_EMOJI, CANCEL_EMOJI]);
 const STATUS_FIELD_NAMES = new Set([
   'Accepted By',
   'Cancelled By',
+  'Expired',
   'Reached By',
   'Status',
 ]);
@@ -54,9 +81,55 @@ const STATUS_FIELD_NAMES = new Set([
 const STATUS_COLORS: Record<PhotographerRequestStatus, number> = {
   ACCEPTED: 0x3fb950,
   CANCELLED: 0xf85149,
+  EXPIRED: 0x8b949e,
   OPEN: 0x58a6ff,
   REACHED: 0xf5c542,
 };
+
+const FINAL_STATUSES = new Set<PhotographerRequestStatus>([
+  'ACCEPTED',
+  'CANCELLED',
+  'EXPIRED',
+]);
+
+export async function sweepExpiredPhotographerRequests(
+  env: Env,
+  options: PhotographerRequestExpirySweepOptions = {},
+): Promise<PhotographerRequestExpirySweepResult> {
+  const channelIds = options.channelIds ?? [
+    ...PHOTOGRAPHER_REQUEST_CHANNEL_IDS,
+  ];
+  const now = options.now ?? new Date();
+  const maxPagesPerChannel = normalizeMaxPages(options.maxPagesPerChannel);
+  const results = await Promise.all(
+    channelIds.map((channelId) =>
+      sweepExpiredPhotographerRequestsInChannel(env, channelId, {
+        maxPagesPerChannel,
+        now,
+      }),
+    ),
+  );
+  const summary = results.reduce<PhotographerRequestExpirySweepResult>(
+    (accumulator, result) => ({
+      channels: accumulator.channels + result.channels,
+      expired: accumulator.expired + result.expired,
+      failed: accumulator.failed + result.failed,
+      scanned: accumulator.scanned + result.scanned,
+      skipped: accumulator.skipped + result.skipped,
+    }),
+    {
+      channels: 0,
+      expired: 0,
+      failed: 0,
+      scanned: 0,
+      skipped: 0,
+    },
+  );
+
+  logger.info('Swept expired photographer requests.', summary);
+
+  return summary;
+}
 
 export async function handlePhotographerRequestReaction(
   event: GatewayInternalEvent,
@@ -100,7 +173,10 @@ export async function handlePhotographerRequestReaction(
       ),
     ]);
 
-    const status = getStatus({ acceptedBy, cancelledBy, reachedBy });
+    const status = resolveReactionStatus(
+      embed,
+      getStatus({ acceptedBy, cancelledBy, reachedBy }),
+    );
     const updatedEmbed = buildUpdatedEmbed(embed, {
       acceptedBy,
       cancelledBy,
@@ -134,6 +210,108 @@ export async function handlePhotographerRequestReaction(
 
     return { handled: false };
   }
+}
+
+async function sweepExpiredPhotographerRequestsInChannel(
+  env: Env,
+  channelId: string,
+  options: {
+    maxPagesPerChannel: number;
+    now: Date;
+  },
+): Promise<PhotographerRequestExpirySweepResult> {
+  const result: PhotographerRequestExpirySweepResult = {
+    channels: 1,
+    expired: 0,
+    failed: 0,
+    scanned: 0,
+    skipped: 0,
+  };
+  let before: string | undefined;
+
+  for (let page = 0; page < options.maxPagesPerChannel; page += 1) {
+    let messages: DiscordMessageResponse[];
+    try {
+      messages = await getDiscordChannelMessages(env, channelId, before);
+    } catch (error) {
+      result.failed += 1;
+      logger.error('Failed to read photographer request channel.', {
+        channelId,
+        error,
+      });
+      break;
+    }
+
+    if (messages.length === 0) {
+      break;
+    }
+
+    for (const message of messages) {
+      const embed = message.embeds?.[0];
+      if (!message.id || !isPhotographerRequestEmbed(embed)) {
+        continue;
+      }
+
+      result.scanned += 1;
+
+      if (!shouldExpirePhotographerRequest(embed, options.now)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      try {
+        await editDiscordMessage(env, {
+          channelId,
+          embeds: [
+            buildUpdatedEmbed(embed, {
+              acceptedBy: [],
+              cancelledBy: [],
+              reachedBy: [],
+              status: 'EXPIRED',
+            }),
+          ],
+          messageId: message.id,
+        });
+        result.expired += 1;
+      } catch (error) {
+        result.failed += 1;
+        logger.error('Failed to mark photographer request expired.', {
+          channelId,
+          error,
+          messageId: message.id,
+        });
+      }
+    }
+
+    if (messages.length < PHOTOGRAPHER_REQUEST_PAGE_SIZE) {
+      break;
+    }
+
+    before = messages[messages.length - 1]?.id;
+    if (!before) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+async function getDiscordChannelMessages(
+  env: Env,
+  channelId: string,
+  before: string | undefined,
+) {
+  const searchParams = new URLSearchParams({
+    limit: String(PHOTOGRAPHER_REQUEST_PAGE_SIZE),
+  });
+  if (before) {
+    searchParams.set('before', before);
+  }
+
+  return discordApiRequest<DiscordMessageResponse[]>(
+    env,
+    `/channels/${channelId}/messages?${searchParams.toString()}`,
+  );
 }
 
 function isStatusReactionEvent(event: GatewayInternalEvent) {
@@ -255,6 +433,21 @@ function getStatus(options: {
   return 'OPEN';
 }
 
+function resolveReactionStatus(
+  embed: DiscordEmbed,
+  reactionStatus: PhotographerRequestStatus,
+): PhotographerRequestStatus {
+  const currentStatus = readPhotographerRequestStatus(embed);
+  if (
+    currentStatus === 'EXPIRED' &&
+    (reactionStatus === 'OPEN' || reactionStatus === 'REACHED')
+  ) {
+    return 'EXPIRED';
+  }
+
+  return reactionStatus;
+}
+
 function buildUpdatedEmbed(
   embed: DiscordEmbed,
   options: {
@@ -274,6 +467,13 @@ function buildUpdatedEmbed(
       value: options.status,
     },
   ];
+
+  if (options.status === 'EXPIRED') {
+    statusFields.push({
+      name: 'Expired',
+      value: EXPIRED_NOTICE,
+    });
+  }
 
   if (options.reachedBy.length) {
     statusFields.push({
@@ -310,6 +510,98 @@ function isPhotographerRequestEmbed(
   embed: DiscordEmbed | undefined,
 ): embed is DiscordEmbed {
   return embed?.footer?.text === PHOTOGRAPHER_REQUEST_FOOTER;
+}
+
+function shouldExpirePhotographerRequest(embed: DiscordEmbed, now: Date) {
+  const status = readPhotographerRequestStatus(embed);
+  if (status && FINAL_STATUSES.has(status)) {
+    return false;
+  }
+
+  return isPhotographerRequestEventExpired(embed, now);
+}
+
+function isPhotographerRequestEventExpired(embed: DiscordEmbed, now: Date) {
+  const eventDate = readEmbedField(embed, 'Date');
+  if (!eventDate || !isPlainDate(eventDate)) {
+    return false;
+  }
+
+  const currentDateTime = getClubLocalDateTime(now);
+  if (eventDate < currentDateTime.date) {
+    return true;
+  }
+
+  if (eventDate > currentDateTime.date) {
+    return false;
+  }
+
+  const endTime = readEmbedField(embed, 'End Time');
+  return !!endTime && isPlainTime(endTime) && endTime <= currentDateTime.time;
+}
+
+function readPhotographerRequestStatus(
+  embed: DiscordEmbed,
+): PhotographerRequestStatus | null {
+  const status = readEmbedField(embed, 'Status')?.toUpperCase();
+  if (
+    status === 'OPEN' ||
+    status === 'REACHED' ||
+    status === 'ACCEPTED' ||
+    status === 'CANCELLED' ||
+    status === 'EXPIRED'
+  ) {
+    return status;
+  }
+
+  return null;
+}
+
+function readEmbedField(embed: DiscordEmbed, name: string) {
+  return embed.fields?.find((field) => field.name === name)?.value.trim();
+}
+
+function getClubLocalDateTime(date: Date) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
+    minute: '2-digit',
+    month: '2-digit',
+    timeZone: CLUB_TIME_ZONE,
+    year: 'numeric',
+  }).formatToParts(date);
+  const partMap = new Map(parts.map((part) => [part.type, part.value]));
+  const year = partMap.get('year') ?? '0000';
+  const month = partMap.get('month') ?? '00';
+  const day = partMap.get('day') ?? '00';
+  const hour = partMap.get('hour') ?? '00';
+  const minute = partMap.get('minute') ?? '00';
+
+  return {
+    date: `${year}-${month}-${day}`,
+    time: `${hour}:${minute}`,
+  };
+}
+
+function isPlainDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  return !Number.isNaN(new Date(`${value}T00:00:00.000Z`).getTime());
+}
+
+function isPlainTime(value: string) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function normalizeMaxPages(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value) || value < 1) {
+    return DEFAULT_EXPIRY_SWEEP_MAX_PAGES;
+  }
+
+  return Math.min(Math.floor(value), MAX_EXPIRY_SWEEP_PAGES);
 }
 
 function formatParticipantName(
