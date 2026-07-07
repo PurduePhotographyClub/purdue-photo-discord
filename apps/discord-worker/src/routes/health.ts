@@ -6,7 +6,6 @@
  */
 import type { Env } from '../discord/types';
 import {
-  getGatewayHealthEndpointEnv,
   getOptionalEnv,
   getOptionalUrlEnv,
   hasWorkerSecret,
@@ -29,7 +28,7 @@ export function handleWorkerHealthRoute(_request: Request, env: Env): Response {
       workerSecret: hasWorkerSecret(env),
       websiteUrl: getOptionalUrlEnv(env, 'WEBSITE_URL').status,
       wikiUrl: getOptionalUrlEnv(env, 'WIKI_URL').status,
-      gatewayIp: getGatewayHealthEndpointEnv(env).status,
+      gatewayService: Boolean(env.GATEWAY_SERVICE),
     },
   });
 }

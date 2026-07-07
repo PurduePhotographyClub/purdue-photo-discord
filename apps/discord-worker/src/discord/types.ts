@@ -13,6 +13,10 @@ import type { DiscordEmbed } from '@pccbot/shared';
 
 export type { DiscordEmbed, DiscordEmbedField } from '@pccbot/shared';
 
+export interface GatewayServiceBinding {
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
+
 export interface Env {
   DISCORD_APPLICATION_ID?: string | undefined;
   DISCORD_GUILD_ID?: string | undefined;
@@ -21,10 +25,7 @@ export interface Env {
   WEBSITE_URL?: string | undefined;
   WIKI_URL?: string | undefined;
   ENVIRONMENT?: string | undefined;
-  GATEWAY_IP?: string | undefined;
-  GATEWAY_PORT?: string | undefined;
-  GATEWAY_HEALTH_IP?: string | undefined;
-  GATEWAY_HEALTH_PORT?: string | undefined;
+  GATEWAY_SERVICE?: GatewayServiceBinding | undefined;
   INTERNAL_TOKEN?: string | undefined;
   WORKER_SECRET?: string | undefined;
   DISCORD_DEFAULT_CHANNEL_ID?: string | undefined;

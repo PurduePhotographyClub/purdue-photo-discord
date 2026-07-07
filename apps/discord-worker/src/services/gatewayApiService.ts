@@ -6,7 +6,7 @@
  */
 import type { Env } from '../discord/types';
 import { AppError, ConfigError } from '../utils/errors';
-import { getGatewayEndpointEnv, getWorkerSecret } from '../utils/env';
+import { getGatewayServiceUrl, getWorkerSecret } from '../utils/env';
 import { signInternalRequest } from '../utils/internalRequestSignature';
 import { createLogger } from '../utils/logger';
 
@@ -31,6 +31,12 @@ type Fetcher = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+type GatewayApiTransport = {
+  fetcher: Fetcher;
+  transport: 'vpc_service';
+  url: string;
+};
+
 const SIGNATURE_HEADER = 'x-pccbot-signature';
 const TIMESTAMP_HEADER = 'x-pccbot-timestamp';
 const logger = createLogger('gateway-api');
@@ -38,16 +44,10 @@ const logger = createLogger('gateway-api');
 export async function updateGatewayPresence(
   env: Env,
   update: GatewayPresenceUpdate,
-  fetcher: Fetcher = fetch,
 ): Promise<GatewayPresenceSnapshot> {
   // /status only needs this one endpoint today, but the lower helper is written
   // for more signed Gateway API calls later.
-  const responseBody = await requestGatewayApi(
-    env,
-    '/presence',
-    update,
-    fetcher,
-  );
+  const responseBody = await requestGatewayApi(env, '/presence', update);
 
   if (!isGatewayPresenceSnapshot(responseBody)) {
     logger.warn('Gateway returned invalid presence response.', {
@@ -69,19 +69,10 @@ async function requestGatewayApi(
   env: Env,
   path: string,
   body: unknown,
-  fetcher: Fetcher,
 ): Promise<unknown> {
   // All Worker-to-Gateway control APIs should go through this helper so they
   // get the same endpoint resolution, signing, and error handling.
-  const endpoint = getGatewayEndpointEnv(env, path);
-
-  if (endpoint.status === 'missing') {
-    throw new ConfigError('GATEWAY_IP is not configured.');
-  }
-
-  if (endpoint.status === 'invalid') {
-    throw new ConfigError(endpoint.reason);
-  }
+  const transport = getGatewayApiTransport(env, path);
 
   const workerSecret = getWorkerSecret(env);
 
@@ -104,7 +95,7 @@ async function requestGatewayApi(
   let response: Response;
 
   try {
-    response = await fetcher(endpoint.url, {
+    response = await transport.fetcher(transport.url, {
       body: requestBody,
       headers: {
         'content-type': 'application/json;charset=UTF-8',
@@ -119,6 +110,7 @@ async function requestGatewayApi(
       latencyMs: Date.now() - startedAt,
       method,
       path,
+      transport: transport.transport,
     });
     throw error;
   }
@@ -131,6 +123,7 @@ async function requestGatewayApi(
       method,
       path,
       status: response.status,
+      transport: transport.transport,
     });
 
     throw new AppError(`Gateway API request failed with ${response.status}.`, {
@@ -142,6 +135,18 @@ async function requestGatewayApi(
   }
 
   return responseBody;
+}
+
+function getGatewayApiTransport(env: Env, path: string): GatewayApiTransport {
+  if (env.GATEWAY_SERVICE) {
+    return {
+      fetcher: (input, init) => env.GATEWAY_SERVICE!.fetch(input, init),
+      transport: 'vpc_service',
+      url: getGatewayServiceUrl(path),
+    };
+  }
+
+  throw new ConfigError('GATEWAY_SERVICE VPC binding is not configured.');
 }
 
 async function parseJsonResponse(response: Response): Promise<unknown> {

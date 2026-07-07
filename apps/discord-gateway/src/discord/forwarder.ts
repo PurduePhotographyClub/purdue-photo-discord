@@ -54,7 +54,6 @@ export class WorkerEventForwarder {
 
     const body: GatewayInternalEvent = {
       eventType: event.eventType,
-      gatewayIp: this.config.gatewayIp,
       payload: event.payload,
       receivedAt: new Date().toISOString(),
       type: 'discord.gateway.event',
