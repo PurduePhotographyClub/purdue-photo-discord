@@ -35,6 +35,7 @@ import {
 } from '../services/discordStudioScheduleService';
 import { sendDiscordVerificationWelcomeMessage } from '../services/discordVerificationService';
 import { handleGatewayEvent } from '../services/gatewayEventService';
+import { sweepExpiredPhotographerRequests } from '../services/photographerRequestStatusService';
 import type { Env } from '../discord/types';
 import { createLogger } from '../utils/logger';
 import type {
@@ -74,6 +75,8 @@ export async function dispatchInternalEvent(
       return handleEquipmentLoanEvent(parsedEvent.event, env);
     case 'filmRequestReview':
       return handleFilmRequestReviewEvent(parsedEvent.event, env);
+    case 'photographerRequestExpirySweep':
+      return handlePhotographerRequestExpirySweepEvent(parsedEvent.event, env);
     case 'memberRoles':
       return handleMemberRolesEvent(parsedEvent.event, env, context);
     case 'scheduledEvent':
@@ -189,6 +192,22 @@ async function handleFilmRequestReviewEvent(
   return {
     channelId: result.channelId,
     messageId: result.messageId,
+    ok: true,
+    type: event.type,
+  };
+}
+
+async function handlePhotographerRequestExpirySweepEvent(
+  event: Extract<
+    ParsedInternalEvent,
+    { kind: 'photographerRequestExpirySweep' }
+  >['event'],
+  env: Env,
+): Promise<Record<string, unknown>> {
+  const result = await sweepExpiredPhotographerRequests(env);
+
+  return {
+    ...result,
     ok: true,
     type: event.type,
   };
