@@ -28,6 +28,7 @@ import type {
   MemberRolesInternalEvent,
   MessageInternalEvent,
   ParsedInternalEvent,
+  PhotographerRequestExpirySweepInternalEvent,
   ScheduledEventInternalEvent,
   StudioPendingReviewInternalEvent,
   StudioScheduleMessageInternalEvent,
@@ -140,6 +141,13 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
     };
   }
 
+  if (type === 'website.photographer_request.expired_sweep') {
+    return {
+      event: parsePhotographerRequestExpirySweepEvent(type),
+      kind: 'photographerRequestExpirySweep',
+    };
+  }
+
   if (
     type === 'website.discord.member_roles.remove' ||
     type === 'website.discord.member_roles.sync' ||
@@ -156,6 +164,12 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
     event: parseMessageEvent(payload, type),
     kind: 'message',
   };
+}
+
+function parsePhotographerRequestExpirySweepEvent(
+  type: PhotographerRequestExpirySweepInternalEvent['type'],
+): PhotographerRequestExpirySweepInternalEvent {
+  return { type };
 }
 
 function parseDarkroomStatsEvent(
