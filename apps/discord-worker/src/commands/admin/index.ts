@@ -8,6 +8,7 @@ export { adminCommand } from './admin';
 export { darkroomStatsCommand } from './darkroomStats';
 export { equipmentTermsMessageCommand } from './equipmentTermsMessage';
 export { grantAdminCommand } from './grantAdmin';
+export { honeypotWarningCommand } from './honeypotWarning';
 export { keyCommand } from './key';
 export { statusCommand } from './status';
 export { studioMessageCommand } from './studioMessage';
