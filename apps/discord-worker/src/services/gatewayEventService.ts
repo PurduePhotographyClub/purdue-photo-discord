@@ -9,6 +9,7 @@ import type { Env } from '../discord/types';
 import { createLogger } from '../utils/logger';
 import { handlePhotographerRequestReaction } from './photographerRequestStatusService';
 import { addDiscordUnverifiedRole } from './discordMemberRoleService';
+import { handleDiscordHoneypotMessage } from './discordHoneypotService';
 
 export interface GatewayEventResult {
   handled: boolean;
@@ -37,6 +38,11 @@ export async function handleGatewayEvent(
   );
   if (photographerRequestResult.handled) {
     return photographerRequestResult;
+  }
+
+  const honeypotResult = await handleDiscordHoneypotMessage(event, env);
+  if (honeypotResult.handled) {
+    return honeypotResult;
   }
 
   if (event.eventType === 'GUILD_MEMBER_ADD' && event.userId) {

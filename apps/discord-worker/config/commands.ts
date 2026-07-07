@@ -8,6 +8,7 @@ import { adminCommand } from '../src/commands/admin/admin';
 import { darkroomStatsCommand } from '../src/commands/admin/darkroomStats';
 import { equipmentTermsMessageCommand } from '../src/commands/admin/equipmentTermsMessage';
 import { grantAdminCommand } from '../src/commands/admin/grantAdmin';
+import { honeypotWarningCommand } from '../src/commands/admin/honeypotWarning';
 import { keyCommand } from '../src/commands/admin/key';
 import { statusCommand } from '../src/commands/admin/status';
 import { studioMessageCommand } from '../src/commands/admin/studioMessage';
@@ -30,6 +31,7 @@ export const commands = [
   equipmentTermsMessageCommand,
   grantAdminCommand,
   healthCommand,
+  honeypotWarningCommand,
   keyCommand,
   merchCommand,
   newsletterCommand,

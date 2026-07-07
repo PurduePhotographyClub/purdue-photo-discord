@@ -100,6 +100,14 @@ function createAdminCommandList(): DiscordMessagePayload {
       ].join('\n'),
     },
     {
+      name: '→ Discord Honeypot',
+      value: [
+        '`/post-honeypot-warning`',
+        'Posts the warning message in the honeypot channel.',
+        '\u200B',
+      ].join('\n'),
+    },
+    {
       name: '→ Wiki Hub',
       value: [
         '`/wiki-message`',
