@@ -16,7 +16,6 @@ export interface GatewayConfig {
   forwardMessageContent: boolean;
   forwardMessages: boolean;
   forwardReactions: boolean;
-  gatewayIp: string;
   httpServer: GatewayHttpServerConfig;
   intents: GatewayIntentBits[];
   partials: Partials[];
@@ -66,7 +65,6 @@ export function readGatewayConfig(
     forwardMessageContent,
     forwardMessages,
     forwardReactions,
-    gatewayIp: readRequiredString(env, 'GATEWAY_IP'),
     httpServer: readHttpServerConfig(env),
     intents: computeGatewayIntents({
       forwardMembers,

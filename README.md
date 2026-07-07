@@ -22,6 +22,7 @@ flowchart LR
   Discord["Discord"] --> Interactions["Cloudflare Worker interactions"]
   Discord --> Gateway["VPS Gateway process"]
   Gateway -->|signed events| Worker["Discord Worker"]
+  Worker -->|Workers VPC service binding| Gateway
   Worker -->|service binding| API["Private API Worker"]
   Worker --> DiscordAPI["Discord REST API"]
   Worker --> KV["Nonce KV"]
@@ -50,6 +51,7 @@ sequenceDiagram
   Worker-->>Discord: Response or follow-up message
   Discord->>Gateway: Gateway event
   Gateway->>Worker: Signed internal event
+  Worker->>Gateway: VPC-bound health and presence control
   Worker->>API: Optional workflow update
 ```
 
@@ -118,6 +120,8 @@ npm run gateway:prepare-deploy
 ```
 
 The generated package contains only the compiled Gateway, a minimal `package.json`, systemd template, and server hook template. It does not include Worker source, Wrangler config, website code, API code, or secret material.
+
+Worker-to-Gateway control traffic uses the `GATEWAY_SERVICE` Workers VPC binding in `apps/discord-worker/wrangler.toml`. The binding points at the `gateway-discord` VPC Service, which routes through the `gateway` Cloudflare Tunnel to the Gateway process listening on the VPS private interface. The API Worker does not bind to the Gateway directly; API-initiated Discord workflows continue through the Discord Worker service binding.
 
 ## Assets And Licensing
 

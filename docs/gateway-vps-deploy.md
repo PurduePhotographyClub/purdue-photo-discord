@@ -8,6 +8,7 @@ This guide describes the public deploy shape for the Discord Gateway without pub
 flowchart LR
   Discord["Discord Gateway"] --> VPS["VPS Gateway process"]
   VPS -->|signed event payloads| Worker["Cloudflare Discord Worker"]
+  Worker -->|Workers VPC service binding| VPS
   Worker --> API["Private API Worker"]
   Worker --> DiscordREST["Discord REST API"]
 ```
@@ -66,6 +67,8 @@ sudo chown -R pccbot:pccbot /opt/git/pccbot-discord-gateway.git /opt/pccbot-disc
 
 Runtime configuration should be created from the private operator runbook, owned by root, readable by the service group only, and never committed.
 
+The Gateway HTTP server only needs to be reachable by `cloudflared` on the VPS/private network. Do not expose its host or port publicly. The Discord Worker reaches it through the `GATEWAY_SERVICE` Workers VPC binding, whose service ID is declared in the Worker Wrangler config.
+
 ## Push Gateway Code To Server
 
 Inside `deploy/discord-gateway`:
@@ -115,5 +118,6 @@ Allow the service user to restart only this service through sudoers. Keep the ex
 - The deploy package is Gateway-only.
 - Runtime configuration lives outside git.
 - Gateway-to-Worker traffic is signed and replay-protected.
+- Worker-to-Gateway control traffic uses Workers VPC through Cloudflare Tunnel; no public VPS IP or port is required in Worker config.
 - Gateway event scope should stay minimal; only enable event families that are actively used.
 - Worker and API logic remain on Cloudflare, not on the VPS.

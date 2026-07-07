@@ -71,19 +71,13 @@ async function handleInternalEventsRequest(
       maxBytes: INTERNAL_EVENT_BODY_LIMIT_BYTES,
     }),
   );
-  const isGatewayEvent = parsedEvent.kind === 'gateway';
 
   logger.info('Received internal event.', {
     ...requestLog,
     ...getInternalEventLogContext(parsedEvent),
   });
 
-  await authorizeGatewayRequest(authRequest, env, {
-    ...(isGatewayEvent && parsedEvent.event.gatewayIp
-      ? { gatewayIp: parsedEvent.event.gatewayIp }
-      : {}),
-    requireBotServerIp: isGatewayEvent,
-  });
+  await authorizeGatewayRequest(authRequest, env);
 
   const responseBody = await dispatchInternalEvent(parsedEvent, env, context);
   logger.info('Handled internal event.', {

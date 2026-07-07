@@ -21,6 +21,11 @@ DISCORD_MIN_ACCOUNT_AGE_DAYS = "1"
 binding = "API_WORKER"
 service = "purdue-photography-club-api"
 
+[[vpc_services]]
+binding = "GATEWAY_SERVICE"
+service_id = "019f3d9e-b57d-79d2-8e47-7598fdc54895"
+remote = true
+
 [[routes]]
 pattern = "discord.purduephotoclub.org"
 custom_domain = true

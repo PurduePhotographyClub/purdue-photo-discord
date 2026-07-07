@@ -22,15 +22,9 @@ const localNonceExpirations = new Map<string, number>();
 export async function authorizeGatewayRequest(
   request: Request,
   env: Env,
-  options: {
-    gatewayIp?: string;
-    requireBotServerIp?: boolean;
-  } = {},
 ): Promise<void> {
   const url = new URL(request.url);
   logger.debug('Authorizing gateway request.', {
-    hasCfConnectingIp: request.headers.has('cf-connecting-ip'),
-    hasGatewayIpConfigured: Boolean(getOptionalEnv(env, 'GATEWAY_IP')),
     hasNonce: request.headers.has(NONCE_HEADER),
     hasNonceStore: Boolean(env.REQUEST_NONCES),
     hasSignature: request.headers.has(SIGNATURE_HEADER),
@@ -38,42 +32,13 @@ export async function authorizeGatewayRequest(
     hasWorkerSecret: Boolean(getWorkerSecret(env)),
     method: request.method,
     path: `${url.pathname}${url.search}`,
-    requireBotServerIp: options.requireBotServerIp ?? true,
-    signedGatewayIp: Boolean(options.gatewayIp),
   });
 
   await verifyGatewaySignature(request, env);
-  if (options.requireBotServerIp ?? true) {
-    enforceBotServerIp(request, env, options.gatewayIp);
-  }
   logger.info('Gateway request authorized successfully.', {
     method: request.method,
     path: `${url.pathname}${url.search}`,
   });
-}
-
-function enforceBotServerIp(
-  request: Request,
-  env: Env,
-  signedGatewayIp: string | undefined,
-): void {
-  const allowedIp = getOptionalEnv(env, 'GATEWAY_IP');
-  if (!allowedIp) {
-    throw new ConfigError('GATEWAY_IP is not configured.');
-  }
-
-  const requestIp = request.headers.get('cf-connecting-ip');
-  if (requestIp === allowedIp || signedGatewayIp === allowedIp) {
-    return;
-  }
-
-  if (!requestIp && !signedGatewayIp) {
-    throw new UnauthorizedError(
-      'Gateway request did not include cf-connecting-ip or signed gatewayIp.',
-    );
-  }
-
-  throw new UnauthorizedError('Gateway request IP did not match GATEWAY_IP.');
 }
 
 async function verifyGatewaySignature(

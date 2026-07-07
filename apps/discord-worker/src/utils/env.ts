@@ -14,6 +14,8 @@ export type UrlEnvResult =
   | { status: 'missing' }
   | { status: 'invalid'; reason: string };
 
+const GATEWAY_SERVICE_ORIGIN = 'http://gateway.internal';
+
 export function getRequiredEnv(env: Env, key: EnvKey): string {
   // Required values throw ConfigError so callers get a consistent Worker error.
   const value = getOptionalEnv(env, key);
@@ -61,46 +63,11 @@ export function getOptionalUrlEnv(env: Env, key: EnvKey): UrlEnvResult {
   }
 }
 
-export function getGatewayEndpointEnv(env: Env, path: string): UrlEnvResult {
-  // GATEWAY_HEALTH_* remains as a temporary compatibility alias from the first
-  // Gateway health implementation.
-  const ip =
-    getOptionalEnv(env, 'GATEWAY_IP') ??
-    getOptionalEnv(env, 'GATEWAY_HEALTH_IP');
-
-  if (!ip) {
-    return { status: 'missing' };
-  }
-
-  const portValue =
-    getOptionalEnv(env, 'GATEWAY_PORT') ??
-    getOptionalEnv(env, 'GATEWAY_HEALTH_PORT') ??
-    '8788';
-  const port = Number(portValue);
-
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    return {
-      reason: 'GATEWAY_PORT must be a TCP port between 1 and 65535.',
-      status: 'invalid',
-    };
-  }
-
-  try {
-    return {
-      status: 'configured',
-      url: new URL(path, `http://${formatHost(ip)}:${port}`).toString(),
-    };
-  } catch {
-    return {
-      reason: 'GATEWAY_IP must be a valid IP address or hostname.',
-      status: 'invalid',
-    };
-  }
-}
-
-export function getGatewayHealthEndpointEnv(env: Env): UrlEnvResult {
-  // Health is just another Gateway HTTP route from the Worker's perspective.
-  return getGatewayEndpointEnv(env, '/health');
+export function getGatewayServiceUrl(path: string): string {
+  // Workers VPC requires an absolute URL, but the VPC Service binding decides
+  // the real tunnel target. Keep this host synthetic so no VPS IP leaks into
+  // Worker code or logs.
+  return new URL(path, GATEWAY_SERVICE_ORIGIN).toString();
 }
 
 export function hasWorkerSecret(env: Env): boolean {
@@ -110,9 +77,4 @@ export function hasWorkerSecret(env: Env): boolean {
 
 export function getWorkerSecret(env: Env): string | undefined {
   return getOptionalEnv(env, 'WORKER_SECRET');
-}
-
-function formatHost(host: string): string {
-  // IPv6 hosts need brackets before adding ":port".
-  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }

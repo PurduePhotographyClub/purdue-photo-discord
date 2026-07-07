@@ -6,7 +6,7 @@
  */
 import type { Env } from '../discord/types';
 import {
-  getGatewayHealthEndpointEnv,
+  getGatewayServiceUrl,
   getOptionalUrlEnv,
   type UrlEnvResult,
 } from '../utils/env';
@@ -57,12 +57,10 @@ export async function getSystemHealth(
   // so the Discord command stays useful in local/dev environments.
   const websiteUrl = getOptionalUrlEnv(env, 'WEBSITE_URL');
   const wikiUrl = getOptionalUrlEnv(env, 'WIKI_URL');
-  const gatewayHealthEndpoint = getGatewayHealthEndpointEnv(env);
-
   const [website, gateway, api, dashboard, wiki, comingSoonPages] =
     await Promise.all([
       checkConfiguredUrl('Website', websiteUrl, fetcher, '/'),
-      checkConfiguredUrl('Gateway', gatewayHealthEndpoint, fetcher),
+      checkGatewayHealth(env, fetcher),
       checkApiHealth(env),
       checkConfiguredUrl('Dashboard', websiteUrl, fetcher, '/dashboard'),
       checkConfiguredUrl('Wiki', wikiUrl, fetcher, '/'),
@@ -85,6 +83,24 @@ export async function getSystemHealth(
     hasInvalidConfig: allChecks.some(
       (check) => check.status === 'invalid_config',
     ),
+  };
+}
+
+async function checkGatewayHealth(
+  env: Env,
+  _fetcher: Fetcher,
+): Promise<ServiceHealthCheck> {
+  if (env.GATEWAY_SERVICE) {
+    return checkEndpoint(
+      'Gateway',
+      getGatewayServiceUrl('/health'),
+      (input, init) => env.GATEWAY_SERVICE!.fetch(input, init),
+    );
+  }
+
+  return {
+    name: 'Gateway',
+    status: 'not_configured',
   };
 }
 
