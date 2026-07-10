@@ -1,4 +1,5 @@
 import type { Env } from '../discord/types';
+import { claimGatewayRequestNonce } from '../services/websiteApiService';
 import { ConfigError, UnauthorizedError } from '../utils/errors';
 import { getOptionalEnv, getWorkerSecret } from '../utils/env';
 import { createLogger } from '../utils/logger';
@@ -9,7 +10,6 @@ const NONCE_HEADER = 'x-pccbot-nonce';
 const SIGNATURE_PREFIX = 'sha256=';
 const MAX_CLOCK_SKEW_MS = 60_000;
 const NONCE_TTL_SECONDS = 120;
-const NONCE_STORE_TIMEOUT_MS = 2_000;
 const MAX_NONCE_LENGTH = 128;
 const LOCAL_NONCE_FALLBACK_ENVIRONMENTS = new Set([
   'dev',
@@ -26,7 +26,7 @@ export async function authorizeGatewayRequest(
   const url = new URL(request.url);
   logger.debug('Authorizing gateway request.', {
     hasNonce: request.headers.has(NONCE_HEADER),
-    hasNonceStore: Boolean(env.REQUEST_NONCES),
+    hasNonceClaimRoute: Boolean(env.API_WORKER),
     hasSignature: request.headers.has(SIGNATURE_HEADER),
     hasTimestamp: request.headers.has(TIMESTAMP_HEADER),
     hasWorkerSecret: Boolean(getWorkerSecret(env)),
@@ -85,52 +85,23 @@ async function verifyGatewaySignature(
 }
 
 async function assertUnusedNonce(env: Env, nonce: string): Promise<void> {
-  const nonceStore = env.REQUEST_NONCES;
-  if (!nonceStore) {
-    if (shouldUseLocalNonceFallback(env)) {
-      assertUnusedLocalNonce(nonce);
-      return;
-    }
-
-    throw new ConfigError('REQUEST_NONCES KV binding is not configured.');
-  }
-
-  try {
-    await assertUnusedStoredNonce(nonceStore, nonce);
+  if (!env.API_WORKER && shouldUseLocalNonceFallback(env)) {
+    logger.warn(
+      'API Worker unavailable in local development; using in-memory nonce fallback.',
+    );
+    assertUnusedLocalNonce(nonce);
     return;
-  } catch (error) {
-    if (error instanceof ConfigError && shouldUseLocalNonceFallback(env)) {
-      logger.warn(
-        'REQUEST_NONCES KV unavailable in local development; using in-memory nonce fallback.',
-        { reason: error.message },
-      );
-      assertUnusedLocalNonce(nonce);
-      return;
-    }
-
-    throw error;
   }
-}
 
-async function assertUnusedStoredNonce(
-  nonceStore: KVNamespace,
-  nonce: string,
-): Promise<void> {
-  const key = `gateway:${nonce}`;
-  logger.debug('Checking gateway request nonce store.', {
-    nonceLength: nonce.length,
-    ttlSeconds: NONCE_TTL_SECONDS,
-  });
-
-  if (await withNonceStoreTimeout(nonceStore.get(key), 'read')) {
+  const claimed = await claimGatewayRequestNonce(env, nonce);
+  if (!claimed) {
     throw new UnauthorizedError('Gateway request nonce was already used.');
   }
 
-  await withNonceStoreTimeout(
-    nonceStore.put(key, '1', { expirationTtl: NONCE_TTL_SECONDS }),
-    'write',
-  );
-  logger.debug('Stored gateway request nonce.');
+  logger.debug('Claimed gateway request nonce through the API Worker.', {
+    nonceLength: nonce.length,
+    ttlSeconds: NONCE_TTL_SECONDS,
+  });
 }
 
 function assertUnusedLocalNonce(nonce: string): void {
@@ -165,44 +136,6 @@ function shouldUseLocalNonceFallback(env: Env): boolean {
     environment !== undefined &&
     LOCAL_NONCE_FALLBACK_ENVIRONMENTS.has(environment)
   );
-}
-
-async function withNonceStoreTimeout<T>(
-  operation: Promise<T>,
-  operationName: 'read' | 'write',
-): Promise<T> {
-  let didTimeOut = false;
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      didTimeOut = true;
-      reject(new ConfigError(`REQUEST_NONCES KV ${operationName} timed out.`));
-    }, NONCE_STORE_TIMEOUT_MS);
-  });
-
-  try {
-    return await Promise.race([operation, timeout]);
-  } catch (error) {
-    if (error instanceof ConfigError) {
-      throw error;
-    }
-
-    logger.error(`REQUEST_NONCES KV ${operationName} failed.`, error);
-    throw new ConfigError(`REQUEST_NONCES KV ${operationName} failed.`);
-  } finally {
-    if (timeoutId !== undefined) {
-      clearTimeout(timeoutId);
-    }
-
-    if (didTimeOut) {
-      operation.catch((error) => {
-        logger.error(
-          `REQUEST_NONCES KV ${operationName} failed after timeout.`,
-          error,
-        );
-      });
-    }
-  }
 }
 
 async function signGatewayRequest(options: {

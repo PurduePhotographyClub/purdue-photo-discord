@@ -35,7 +35,6 @@ export interface Env {
   DISCORD_VERIFIED_ROLE_ID?: string | undefined;
   DISCORD_WIKI_CHANNEL_ID?: string | undefined;
   API_WORKER?: Fetcher | undefined;
-  REQUEST_NONCES?: KVNamespace | undefined;
 }
 
 export type Snowflake = string;

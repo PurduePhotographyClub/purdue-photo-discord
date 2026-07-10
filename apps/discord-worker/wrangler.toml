@@ -29,7 +29,3 @@ remote = true
 [[routes]]
 pattern = "discord.purduephotoclub.org"
 custom_domain = true
-
-[[kv_namespaces]]
-binding = "REQUEST_NONCES"
-id = "fe6f1706094840ddabd1288b0b79c306"

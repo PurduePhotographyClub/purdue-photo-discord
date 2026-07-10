@@ -28,6 +28,62 @@ const API_V1_PREFIX = '/api/v1';
 const DISCORD_WORKER_SOURCE = 'discord-worker';
 const logger = createLogger('website-api');
 
+/**
+ * Claims a gateway-auth nonce through the API Worker without exposing its D1
+ * binding to the Discord Worker. This route deliberately bypasses the normal
+ * /api/v1 path normalizer because it is a private internal endpoint.
+ */
+export async function claimGatewayRequestNonce(
+  env: Env,
+  nonce: string,
+): Promise<boolean> {
+  const token = getOptionalEnv(env, 'INTERNAL_TOKEN');
+  if (!token) {
+    throw new ConfigError(
+      'INTERNAL_TOKEN is required for gateway nonce claims.',
+    );
+  }
+
+  if (!env.API_WORKER) {
+    throw new ConfigError('API_WORKER service binding is not configured.');
+  }
+
+  const request = new Request('https://api.internal/internal/gateway-nonces', {
+    body: JSON.stringify({ nonce }),
+    headers: {
+      'content-type': 'application/json;charset=UTF-8',
+      [INTERNAL_SOURCE_HEADER]: DISCORD_WORKER_SOURCE,
+      [INTERNAL_TOKEN_HEADER]: token,
+    },
+    method: 'POST',
+  });
+
+  let response: Response;
+  try {
+    response = await env.API_WORKER.fetch(request);
+  } catch (error) {
+    logger.error('Gateway nonce claim failed before response.', { error });
+    throw error;
+  }
+
+  if (response.status === 201) {
+    return true;
+  }
+
+  if (response.status === 409) {
+    return false;
+  }
+
+  const responseBody = await parseJsonResponse(response);
+  logger.warn('Gateway nonce claim failed.', { status: response.status });
+  throw new AppError(`Gateway nonce claim failed with ${response.status}.`, {
+    code: 'GATEWAY_NONCE_CLAIM_FAILED',
+    details: responseBody,
+    expose: false,
+    status: 502,
+  });
+}
+
 export async function requestWebsiteApi(
   env: Env,
   path: string,

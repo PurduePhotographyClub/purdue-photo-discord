@@ -24,7 +24,7 @@ export function handleWorkerHealthRoute(_request: Request, env: Env): Response {
       discordGuildId: Boolean(getOptionalEnv(env, 'DISCORD_GUILD_ID')),
       discordPublicKey: Boolean(getOptionalEnv(env, 'DISCORD_PUBLIC_KEY')),
       apiWorker: Boolean(env.API_WORKER),
-      nonceKv: Boolean(env.REQUEST_NONCES),
+      nonceReplayProtection: Boolean(env.API_WORKER),
       workerSecret: hasWorkerSecret(env),
       websiteUrl: getOptionalUrlEnv(env, 'WEBSITE_URL').status,
       wikiUrl: getOptionalUrlEnv(env, 'WIKI_URL').status,
