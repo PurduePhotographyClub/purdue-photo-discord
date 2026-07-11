@@ -321,6 +321,7 @@ function buildMemberRolesSyncInput(event: DiscordMemberRolesSyncInternalEvent) {
     ...(event.membershipExpired !== undefined
       ? { membershipExpired: event.membershipExpired }
       : {}),
+    ...(event.nickname ? { nickname: event.nickname } : {}),
     ...(event.tier !== undefined ? { tier: event.tier } : {}),
   };
 }

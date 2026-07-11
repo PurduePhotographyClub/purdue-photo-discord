@@ -734,6 +734,7 @@ function parseMemberRolesEvent(
   }
 
   const tier = readNullableString(payload, 'tier');
+  const nickname = readString(payload, 'nickname');
   if (
     tier !== undefined &&
     tier !== null &&
@@ -746,6 +747,7 @@ function parseMemberRolesEvent(
   return {
     discordId,
     membershipExpired: readBoolean(payload, 'membershipExpired') ?? false,
+    ...(nickname ? { nickname } : {}),
     ...(tier !== undefined ? { tier } : {}),
     type,
   };

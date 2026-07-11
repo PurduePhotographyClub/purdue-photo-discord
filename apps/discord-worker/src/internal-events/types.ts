@@ -210,6 +210,7 @@ export interface PhotographerRequestExpirySweepInternalEvent {
 export interface DiscordMemberRolesSyncInternalEvent {
   discordId: string;
   membershipExpired?: boolean;
+  nickname?: string;
   tier?: 'facilities' | 'member' | null;
   type: 'website.discord.member_roles.sync';
 }

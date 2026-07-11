@@ -10,6 +10,7 @@ type MembershipTier = 'facilities' | 'member';
 export interface SyncDiscordMemberRolesInput {
   discordId: string;
   membershipExpired?: boolean;
+  nickname?: string | null;
   tier?: MembershipTier | null;
 }
 
@@ -289,10 +290,25 @@ export async function syncDiscordMemberRoles(
     };
   }
 
+  const nickname = normalizeDiscordVerificationNickname(input.nickname);
+  const nicknameUpdate: DiscordNicknameUpdateResult = nickname
+    ? await updateDiscordMemberNickname(
+        env,
+        guildId,
+        discordId,
+        nickname,
+        member,
+      )
+    : { updated: false };
+
   return {
     addedRoleIds,
     failedRoleIds,
     inGuild: true,
+    ...(nickname ? { nicknameUpdated: nicknameUpdate.updated } : {}),
+    ...(nicknameUpdate.reason
+      ? { nicknameUpdateReason: nicknameUpdate.reason }
+      : {}),
     removedRoleIds,
   };
 }
