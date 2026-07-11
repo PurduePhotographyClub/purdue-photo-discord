@@ -292,7 +292,13 @@ export async function syncDiscordMemberRoles(
 
   const nickname = normalizeDiscordVerificationNickname(input.nickname);
   const nicknameUpdate: DiscordNicknameUpdateResult = nickname
-    ? await updateDiscordMemberNickname(env, guildId, discordId, nickname, member)
+    ? await updateDiscordMemberNickname(
+        env,
+        guildId,
+        discordId,
+        nickname,
+        member,
+      )
     : { updated: false };
 
   return {
@@ -300,7 +306,9 @@ export async function syncDiscordMemberRoles(
     failedRoleIds,
     inGuild: true,
     ...(nickname ? { nicknameUpdated: nicknameUpdate.updated } : {}),
-    ...(nicknameUpdate.reason ? { nicknameUpdateReason: nicknameUpdate.reason } : {}),
+    ...(nicknameUpdate.reason
+      ? { nicknameUpdateReason: nicknameUpdate.reason }
+      : {}),
     removedRoleIds,
   };
 }
