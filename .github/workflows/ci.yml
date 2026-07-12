@@ -80,7 +80,7 @@ jobs:
           node-version: 22
 
       - name: Download worker deploy artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: discord-worker-dist
           path: apps/discord-worker/dist
