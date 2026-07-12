@@ -1099,6 +1099,7 @@ function parseMessageEvent(
   const channelId = readString(payload, 'channelId');
   const embeds = readEmbeds(payload);
   const messageId = readString(payload, 'messageId');
+  const nonce = readString(payload, 'nonce');
 
   if (!content && (!embeds || embeds.length === 0)) {
     throw new BadRequestError('Internal event requires content or embeds.');
@@ -1112,12 +1113,17 @@ function parseMessageEvent(
     throw new BadRequestError('channelId is required when editing a message.');
   }
 
+  if (nonce && nonce.length > 25) {
+    throw new BadRequestError('Discord message nonce is too long.');
+  }
+
   return {
     type,
     ...(channelId ? { channelId } : {}),
     ...(content ? { content } : {}),
     ...(embeds ? { embeds } : {}),
     ...(messageId ? { messageId } : {}),
+    ...(nonce ? { nonce } : {}),
   };
 }
 

@@ -14,6 +14,7 @@ export interface SendDiscordMessageInput {
   components?: unknown[] | undefined;
   content?: string | undefined;
   embeds?: DiscordEmbed[] | undefined;
+  nonce?: string | undefined;
 }
 
 export interface EditDiscordMessageInput {
@@ -28,6 +29,7 @@ export interface SendDiscordDirectMessageInput {
   components?: unknown[] | undefined;
   content?: string | undefined;
   embeds?: DiscordEmbed[] | undefined;
+  nonce?: string | undefined;
   recipientId: string;
 }
 
@@ -37,6 +39,7 @@ interface DiscordChannelResponse {
 
 interface DiscordMessageResponse {
   id?: string;
+  nonce?: number | string | null;
 }
 
 export interface SendDiscordDirectMessageResult {
@@ -69,6 +72,24 @@ export async function sendDiscordMessage(
     );
   }
 
+  const nonce = input.nonce?.trim();
+  if (input.nonce !== undefined && (!nonce || nonce.length > 25)) {
+    throw new BadRequestError(
+      'Discord message nonce must be between 1 and 25 characters.',
+    );
+  }
+
+  if (nonce) {
+    const existingMessage = await findRecentMessageByNonce(
+      env,
+      channelId,
+      nonce,
+    );
+    if (existingMessage) {
+      return existingMessage;
+    }
+  }
+
   return discordApiRequest(env, `/channels/${channelId}/messages`, {
     body: JSON.stringify({
       // Prevent forwarded website or gateway text from unexpectedly pinging
@@ -77,9 +98,37 @@ export async function sendDiscordMessage(
       components: input.components,
       content: input.content,
       embeds: input.embeds,
+      ...(nonce ? { enforce_nonce: true, nonce } : {}),
     }),
     method: 'POST',
   });
+}
+
+async function findRecentMessageByNonce(
+  env: Env,
+  channelId: string,
+  nonce: string,
+) {
+  const messages = await discordApiRequest<unknown>(
+    env,
+    `/channels/${channelId}/messages?limit=100`,
+  );
+  if (!Array.isArray(messages)) {
+    throw new Error('Discord did not return a valid recent-message list.');
+  }
+
+  return (
+    messages.find(
+      (message): message is DiscordMessageResponse =>
+        isDiscordMessageResponse(message) && String(message.nonce) === nonce,
+    ) ?? null
+  );
+}
+
+function isDiscordMessageResponse(
+  value: unknown,
+): value is DiscordMessageResponse {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export async function sendDiscordDirectMessage(
@@ -115,6 +164,7 @@ export async function sendDiscordDirectMessage(
     components: input.components,
     content: input.content,
     embeds: input.embeds,
+    nonce: input.nonce,
   })) as DiscordMessageResponse;
 
   return {

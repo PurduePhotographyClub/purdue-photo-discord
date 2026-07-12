@@ -161,11 +161,23 @@ export async function syncEquipmentLoanChannel(
 ) {
   let channelId = event.channelId ?? null;
 
+  if (event.reminderKind) {
+    const reminderResult = await sendEquipmentLoanReminder(
+      env,
+      channelId,
+      event,
+    );
+    return {
+      channelId: reminderResult.staleChannel ? null : channelId,
+      messageId: reminderResult.staleChannel ? null : (event.messageId ?? null),
+      reminderDelivered: reminderResult.reminderDelivered,
+      staleChannel: reminderResult.staleChannel,
+    };
+  }
+
   if (!channelId) {
     if (!shouldCreateLoanChannel(event)) {
-      if (!event.reminderKind) {
-        await notifyEquipmentLoanParticipants(env, event);
-      }
+      await notifyEquipmentLoanParticipants(env, event);
 
       return {
         channelId: null,
@@ -191,11 +203,7 @@ export async function syncEquipmentLoanChannel(
       )
     : await sendEquipmentLoanMessage(env, channelId, event);
 
-  if (event.reminderKind) {
-    await sendEquipmentLoanReminder(env, channelId, event);
-  } else {
-    await notifyEquipmentLoanParticipants(env, event);
-  }
+  await notifyEquipmentLoanParticipants(env, event);
 
   return {
     channelId,
@@ -366,7 +374,7 @@ async function editOrSendEquipmentLoanMessage(
 
 async function sendEquipmentLoanReminder(
   env: Env,
-  channelId: string,
+  channelId: string | null,
   event: EquipmentLoanSyncInternalEvent,
 ) {
   const content =
@@ -378,15 +386,65 @@ async function sendEquipmentLoanReminder(
     event.lender?.discordId ?? '',
   ]);
 
-  await Promise.allSettled([
-    sendDiscordMessage(env, { channelId, content }),
+  const deliveryResults = await Promise.allSettled([
+    ...(channelId
+      ? [
+          sendDiscordMessage(env, {
+            channelId,
+            content,
+            nonce: createEquipmentReminderNonce(event, `channel:${channelId}`),
+          }),
+        ]
+      : []),
     ...reminderRecipients.map((recipientId) =>
       sendDiscordDirectMessage(env, {
         content,
+        nonce: createEquipmentReminderNonce(event, `dm:${recipientId}`),
         recipientId,
       }),
     ),
   ]);
+  const failedDeliveries = deliveryResults.filter(
+    (result) => result.status === 'rejected',
+  ).length;
+  const channelResult = channelId ? deliveryResults[0] : null;
+  const borrowerResult = deliveryResults[channelId ? 1 : 0];
+  const reminderDelivered =
+    channelResult?.status === 'fulfilled' ||
+    borrowerResult?.status === 'fulfilled';
+  const staleChannel =
+    channelResult?.status === 'rejected' &&
+    isDiscordNotFoundError(channelResult.reason);
+
+  if (failedDeliveries > 0 || !reminderDelivered) {
+    logger.warn('Some equipment reminder deliveries failed.', {
+      channelAttempted: !!channelId,
+      failedDeliveries,
+      reminderDelivered,
+      recipientCount: reminderRecipients.length,
+      staleChannel,
+    });
+  }
+
+  return { reminderDelivered, staleChannel };
+}
+
+function createEquipmentReminderNonce(
+  event: EquipmentLoanSyncInternalEvent,
+  destination: string,
+) {
+  const value = `${event.loanId}:${event.reminderKind}:${destination}`;
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x85ebca6b);
+  }
+
+  return `eq-${(first >>> 0).toString(16).padStart(8, '0')}${(second >>> 0)
+    .toString(16)
+    .padStart(8, '0')}`;
 }
 
 async function notifyEquipmentLoanParticipants(
