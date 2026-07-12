@@ -24,7 +24,7 @@
     "register:global": "npm run register:global -w @pccbot/discord-worker",
     "register:guild": "npm run register:guild -w @pccbot/discord-worker",
     "start:gateway": "npm run start -w @pccbot/discord-gateway",
-    "test": "node --import tsx --test apps/discord-worker/src/commands/admin/honeypotWarning.test.ts apps/discord-worker/src/services/discordHoneypotService.test.ts apps/discord-worker/src/services/gatewayApiService.test.ts apps/discord-worker/src/services/photographerRequestStatusService.test.ts apps/discord-worker/src/services/websiteApiService.test.ts apps/discord-worker/src/utils/env.test.ts",
+    "test": "node --import tsx --test apps/discord-worker/src/commands/admin/honeypotWarning.test.ts apps/discord-worker/src/services/discordEquipmentLoanService.test.ts apps/discord-worker/src/services/discordHoneypotService.test.ts apps/discord-worker/src/services/gatewayApiService.test.ts apps/discord-worker/src/services/photographerRequestStatusService.test.ts apps/discord-worker/src/services/websiteApiService.test.ts apps/discord-worker/src/utils/env.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "verify": "npm run check",
     "worker:dev": "npm run dev:worker",

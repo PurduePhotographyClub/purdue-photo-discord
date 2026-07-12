@@ -384,6 +384,7 @@ async function handleMessageEvent(
         channelId: event.channelId,
         content: event.content,
         embeds: event.embeds,
+        nonce: event.nonce,
       });
 
   return {

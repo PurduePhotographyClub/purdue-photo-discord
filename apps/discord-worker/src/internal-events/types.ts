@@ -11,6 +11,7 @@ export interface MessageInternalEvent {
   content?: string;
   embeds?: DiscordEmbed[];
   messageId?: string;
+  nonce?: string;
   type: string;
 }
 
