@@ -15,6 +15,11 @@ const DISCORD_MAX_RETRY_DELAY_MS = 60_000;
 const DISCORD_MAX_INLINE_RETRY_DELAY_MS = 500;
 const logger = createLogger('discord-api');
 
+export interface DiscordRateLimitRetryOptions {
+  maxRetries?: number | undefined;
+  maxRetryDelayMs: number;
+}
+
 export type CommandRegistrationScope = 'auto' | 'global' | 'guild';
 
 export interface CommandRegistrationOptions {
@@ -84,7 +89,7 @@ export async function discordApiRequest<T>(
       logger.warn(
         canRetryInline
           ? 'Discord API request rate-limited; retrying once.'
-          : 'Discord API request rate-limited; skipping a long inline retry.',
+          : 'Discord API request rate-limited; deferring retry to the caller.',
         {
           bucket: response.headers.get('x-ratelimit-bucket') ?? undefined,
           globalRateLimit:
@@ -96,6 +101,9 @@ export async function discordApiRequest<T>(
           status: response.status,
         },
       );
+      // Discord's retry_after value is authoritative and expressed in seconds.
+      // Retrying early only creates another 429 and makes a manual resync add
+      // more pressure to the same bucket.
       if (canRetryInline) {
         await sleep(retryAfterMs);
         continue;
@@ -120,6 +128,9 @@ export async function discordApiRequest<T>(
         `Discord API request failed with ${response.status}.`,
         response.status,
         responseBody,
+        response.status === 429
+          ? readRetryAfterMs(response, responseBody)
+          : undefined,
       );
     }
 
@@ -127,6 +138,39 @@ export async function discordApiRequest<T>(
   }
 
   throw new DiscordApiError('Discord API request failed with 429.', 429);
+}
+
+export async function retryDiscordRateLimitedOperation<Result>(
+  operation: () => Promise<Result>,
+  options: DiscordRateLimitRetryOptions,
+): Promise<Result> {
+  const maxRetries = options.maxRetries ?? 1;
+  const maxRetryDelayMs = Math.min(
+    Math.max(options.maxRetryDelayMs, 0),
+    DISCORD_MAX_RETRY_DELAY_MS,
+  );
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const retryAfterMs =
+        error instanceof DiscordApiError ? error.retryAfterMs : undefined;
+      const canRetry =
+        error instanceof DiscordApiError &&
+        error.status === 429 &&
+        attempt < maxRetries &&
+        retryAfterMs !== undefined &&
+        retryAfterMs <= maxRetryDelayMs;
+      if (!canRetry) throw error;
+
+      logger.warn('Retrying a rate-limited Discord operation.', {
+        attempt: attempt + 1,
+        retryAfterMs,
+      });
+      await sleep(retryAfterMs);
+    }
+  }
 }
 
 export async function registerGlobalCommands(
@@ -278,20 +322,17 @@ function readRetryAfterMs(response: Response, responseBody: unknown) {
   const retryAfter = bodyRetryAfter ?? headerRetryAfter ?? 0.25;
   const retryAfterMs = retryAfter * 1_000;
 
-  return Math.min(
-    Math.max(Math.ceil(retryAfterMs), 100),
-    DISCORD_MAX_RETRY_DELAY_MS,
-  );
+  return Math.max(Math.ceil(retryAfterMs), 100);
 }
 
 function readNumericRetryAfter(value: unknown) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
     return value;
   }
 
   if (typeof value === 'string') {
     const parsed = Number.parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : null;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
   }
 
   return null;

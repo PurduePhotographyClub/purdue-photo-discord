@@ -70,7 +70,14 @@ export class ConfigError extends AppError {
 }
 
 export class DiscordApiError extends AppError {
-  constructor(message: string, status: number, details?: unknown) {
+  readonly retryAfterMs: number | undefined;
+
+  constructor(
+    message: string,
+    status: number,
+    details?: unknown,
+    retryAfterMs?: number,
+  ) {
     // Discord's 4xx responses are usually actionable caller problems. 5xx stays
     // opaque to users because it is either Discord downtime or an unexpected bug.
     super(message, {
@@ -79,6 +86,7 @@ export class DiscordApiError extends AppError {
       expose: status < 500,
       status,
     });
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
