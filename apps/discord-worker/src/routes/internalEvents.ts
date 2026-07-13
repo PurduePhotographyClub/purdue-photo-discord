@@ -10,7 +10,12 @@ import { authorizeGatewayRequest } from '../http/gatewayRequestAuth';
 import type { Env } from '../discord/types';
 import type { ParsedInternalEvent } from '../internal-events/types';
 import { isAppError } from '../utils/errors';
-import { errorJsonResponse, jsonResponse, readJson } from '../utils/json';
+import {
+  errorJsonResponse,
+  jsonResponse,
+  parseJsonText,
+  readRequestText,
+} from '../utils/json';
 import { createLogger } from '../utils/logger';
 import { retryDiscordRateLimitedOperation } from '../discord/api';
 
@@ -66,14 +71,12 @@ async function handleInternalEventsRequest(
   requestLog: RequestLogContext,
   startedAt: number,
 ): Promise<Response> {
-  const authRequest = request.clone();
-  await authorizeGatewayRequest(authRequest, env);
+  const rawBody = await readRequestText(request, {
+    maxBytes: INTERNAL_EVENT_BODY_LIMIT_BYTES,
+  });
+  await authorizeGatewayRequest(request, env, rawBody);
 
-  const parsedEvent = parseInternalEvent(
-    await readJson(request, {
-      maxBytes: INTERNAL_EVENT_BODY_LIMIT_BYTES,
-    }),
-  );
+  const parsedEvent = parseInternalEvent(parseJsonText(rawBody));
 
   logger.info('Received internal event.', {
     ...requestLog,
@@ -101,6 +104,7 @@ function isSchedulingEvent(parsedEvent: ParsedInternalEvent) {
   return (
     parsedEvent.kind === 'darkroomSchedule' ||
     parsedEvent.kind === 'darkroomWeeklyJoinMessage' ||
+    parsedEvent.kind === 'scheduledEvent' ||
     parsedEvent.kind === 'studioSchedule' ||
     parsedEvent.kind === 'studioScheduleMessage'
   );

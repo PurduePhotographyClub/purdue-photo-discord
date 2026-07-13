@@ -63,6 +63,10 @@ export async function readJson<T = unknown>(
   // Read as text first so empty bodies and invalid JSON get friendly errors.
   const body = await readRequestText(request, options);
 
+  return parseJsonText<T>(body);
+}
+
+export function parseJsonText<T = unknown>(body: string): T {
   if (body.trim().length === 0) {
     throw new BadRequestError('Request body must contain JSON.');
   }
@@ -76,9 +80,9 @@ export async function readJson<T = unknown>(
   }
 }
 
-async function readRequestText(
+export async function readRequestText(
   request: Request,
-  options: ReadJsonOptions,
+  options: ReadJsonOptions = {},
 ): Promise<string> {
   if (options.maxBytes === undefined) {
     return request.text();
@@ -91,10 +95,40 @@ async function readRequestText(
     throw new BadRequestError('Request body is too large.');
   }
 
-  const body = await request.arrayBuffer();
+  if (request.body === null) {
+    return '';
+  }
 
-  if (body.byteLength > options.maxBytes) {
-    throw new BadRequestError('Request body is too large.');
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bodyLength = 0;
+
+  // Stop consuming an unknown-length stream as soon as it crosses the limit;
+  // never materialize an unbounded ArrayBuffer before validation.
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      if (value.byteLength > options.maxBytes - bodyLength) {
+        await reader.cancel('Request body is too large.');
+        throw new BadRequestError('Request body is too large.');
+      }
+
+      chunks.push(value);
+      bodyLength += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(bodyLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
   }
 
   return new TextDecoder().decode(body);

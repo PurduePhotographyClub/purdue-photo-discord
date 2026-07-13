@@ -8,6 +8,7 @@ import {
   retryDiscordRateLimitedOperation,
 } from '../discord/api';
 import type { Env } from '../discord/types';
+import { handleInternalEventsRoute } from '../routes/internalEvents';
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const readSource = async (relativePath: string) =>
@@ -15,18 +16,147 @@ const readSource = async (relativePath: string) =>
 
 test('internal scheduling events authenticate before parsing or logging payload metadata', async () => {
   const source = await readSource('../routes/internalEvents.ts');
+  const boundedReadIndex = source.indexOf('await readRequestText');
   const authorizeIndex = source.indexOf('await authorizeGatewayRequest');
-  const parseIndex = source.indexOf('parseInternalEvent(');
+  const parseIndex = source.indexOf('parseJsonText(rawBody)');
   const receivedLogIndex = source.indexOf(
     "logger.info('Received internal event.'",
   );
 
+  assert.ok(boundedReadIndex > 0);
   assert.ok(authorizeIndex > 0);
+  assert.ok(boundedReadIndex < authorizeIndex);
   assert.ok(authorizeIndex < parseIndex);
   assert.ok(authorizeIndex < receivedLogIndex);
+  assert.match(source, /authorizeGatewayRequest\(request, env, rawBody\)/);
+  assert.doesNotMatch(source, /request\.clone\(\)/);
   assert.match(source, /isSchedulingEvent\(parsedEvent\)/);
   assert.match(source, /retryDiscordRateLimitedOperation/);
   assert.match(source, /maxRetryDelayMs:\s*15_000/);
+});
+
+test('internal event ingress rejects an unknown-length stream above 64 KiB before authorization', async () => {
+  const chunkSize = 16 * 1_024;
+  let chunksProduced = 0;
+  let wasCancelled = false;
+  const requestBody = new ReadableStream<Uint8Array>({
+    cancel() {
+      wasCancelled = true;
+    },
+    pull(controller) {
+      chunksProduced += 1;
+      controller.enqueue(new Uint8Array(chunkSize).fill(0x61));
+      if (chunksProduced === 8) {
+        controller.close();
+      }
+    },
+  });
+  const request = new Request('https://discord.internal/internal/events', {
+    body: requestBody,
+    duplex: 'half',
+    method: 'POST',
+  } as RequestInit & { duplex: 'half' });
+
+  assert.equal(request.headers.get('content-length'), null);
+
+  const response = await handleInternalEventsRoute(request, {
+    ENVIRONMENT: 'local',
+    WORKER_SECRET: 'test-worker-secret',
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'BAD_REQUEST',
+      message: 'Request body is too large.',
+    },
+    success: false,
+  });
+  assert.equal(wasCancelled, true);
+  assert.ok(
+    chunksProduced < 8,
+    'the route should stop consuming after the limit',
+  );
+});
+
+test('internal event ingress authenticates the exact bounded body before parsing it', async () => {
+  const request = await createSignedInternalEventRequest('{not-json');
+  const response = await handleInternalEventsRoute(request, {
+    ENVIRONMENT: 'local',
+    WORKER_SECRET: 'test-worker-secret',
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'BAD_REQUEST',
+      message: 'Request body must be valid JSON.',
+    },
+    success: false,
+  });
+});
+
+test('internal event ingress still rejects a bad signature before parsing', async () => {
+  const request = await createSignedInternalEventRequest('{not-json');
+  request.headers.set('x-pccbot-signature', `sha256=${'0'.repeat(64)}`);
+
+  const response = await handleInternalEventsRoute(request, {
+    ENVIRONMENT: 'local',
+    WORKER_SECRET: 'test-worker-secret',
+  });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'UNAUTHORIZED',
+      message: 'Gateway request signature did not match.',
+    },
+    success: false,
+  });
+});
+
+test('club scheduled events retry a recoverable Discord 429', async () => {
+  const originalFetch = globalThis.fetch;
+  const responses = [
+    Response.json(
+      { message: 'You are being rate limited.', retry_after: 0.501 },
+      { status: 429 },
+    ),
+    Response.json({ id: '123456789012345678' }),
+  ];
+  let requestCount = 0;
+
+  globalThis.fetch = async () => {
+    const response = responses[requestCount];
+    requestCount += 1;
+    assert.ok(response, 'Discord received more than one retry');
+    return response;
+  };
+
+  try {
+    const body = JSON.stringify({
+      startsAt: '2026-07-14T10:00:00.000Z',
+      title: 'Club photo walk',
+      type: 'website.event.create',
+    });
+    const request = await createSignedInternalEventRequest(body);
+    const response = await handleInternalEventsRoute(request, {
+      DISCORD_GUILD_ID: '234567890123456789',
+      DISCORD_TOKEN: 'test-token',
+      ENVIRONMENT: 'local',
+      WORKER_SECRET: 'test-worker-secret',
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(requestCount, 2);
+    assert.deepEqual(await response.json(), {
+      discordEventId: '123456789012345678',
+      ok: true,
+      type: 'website.event.create',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('schedule event revisions cross the parser boundary', async () => {
@@ -224,3 +354,37 @@ test('darkroom resync retries a recoverable Discord 429 from the Retry-After hea
     globalThis.fetch = originalFetch;
   }
 });
+
+async function createSignedInternalEventRequest(body: string) {
+  const method = 'POST';
+  const nonce = crypto.randomUUID();
+  const path = '/internal/events';
+  const secret = 'test-worker-secret';
+  const timestamp = String(Date.now());
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { hash: 'SHA-256', name: 'HMAC' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode([method, path, timestamp, nonce, body].join('\n')),
+  );
+  const signatureHex = [...new Uint8Array(signature)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+
+  return new Request(`https://discord.internal${path}`, {
+    body,
+    headers: {
+      'content-type': 'application/json;charset=UTF-8',
+      'x-pccbot-nonce': nonce,
+      'x-pccbot-signature': `sha256=${signatureHex}`,
+      'x-pccbot-timestamp': timestamp,
+    },
+    method,
+  });
+}

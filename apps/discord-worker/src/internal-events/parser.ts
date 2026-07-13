@@ -1094,6 +1094,10 @@ function parseScheduledEvent(
     throw new BadRequestError('Discord scheduled event ID is required.');
   }
 
+  if (discordEventId) {
+    assertDiscordSnowflake(discordEventId, 'Discord scheduled event ID');
+  }
+
   if (type === 'website.event.delete') {
     return {
       discordEventId: discordEventId as string,
