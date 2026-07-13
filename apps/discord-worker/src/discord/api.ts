@@ -11,7 +11,8 @@ import { createLogger } from '../utils/logger';
 
 const DISCORD_API_BASE_URL = 'https://discord.com/api/v10';
 const DISCORD_MAX_RATE_LIMIT_RETRIES = 1;
-const DISCORD_MAX_RETRY_DELAY_MS = 2_500;
+const DISCORD_MAX_RETRY_DELAY_MS = 60_000;
+const DISCORD_MAX_INLINE_RETRY_DELAY_MS = 500;
 const logger = createLogger('discord-api');
 
 export type CommandRegistrationScope = 'auto' | 'global' | 'guild';
@@ -79,18 +80,26 @@ export async function discordApiRequest<T>(
 
     if (response.status === 429 && attempt < DISCORD_MAX_RATE_LIMIT_RETRIES) {
       const retryAfterMs = readRetryAfterMs(response, responseBody);
-      logger.warn('Discord API request rate-limited; retrying once.', {
-        bucket: response.headers.get('x-ratelimit-bucket') ?? undefined,
-        globalRateLimit:
-          response.headers.get('x-ratelimit-global') ?? undefined,
-        latencyMs: Date.now() - startedAt,
-        method,
-        path: normalizedPath,
-        retryAfterMs,
-        status: response.status,
-      });
-      await sleep(retryAfterMs);
-      continue;
+      const canRetryInline = retryAfterMs <= DISCORD_MAX_INLINE_RETRY_DELAY_MS;
+      logger.warn(
+        canRetryInline
+          ? 'Discord API request rate-limited; retrying once.'
+          : 'Discord API request rate-limited; skipping a long inline retry.',
+        {
+          bucket: response.headers.get('x-ratelimit-bucket') ?? undefined,
+          globalRateLimit:
+            response.headers.get('x-ratelimit-global') ?? undefined,
+          latencyMs: Date.now() - startedAt,
+          method,
+          path: normalizedPath,
+          retryAfterMs,
+          status: response.status,
+        },
+      );
+      if (canRetryInline) {
+        await sleep(retryAfterMs);
+        continue;
+      }
     }
 
     if (!response.ok) {
@@ -267,7 +276,7 @@ function readRetryAfterMs(response: Response, responseBody: unknown) {
     response.headers.get('retry-after'),
   );
   const retryAfter = bodyRetryAfter ?? headerRetryAfter ?? 0.25;
-  const retryAfterMs = retryAfter > 50 ? retryAfter : retryAfter * 1_000;
+  const retryAfterMs = retryAfter * 1_000;
 
   return Math.min(
     Math.max(Math.ceil(retryAfterMs), 100),

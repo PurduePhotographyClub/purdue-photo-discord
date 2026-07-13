@@ -236,6 +236,7 @@ function parseDarkroomScheduleEvent(
   const status = readString(payload, 'status');
   const capacity = readInteger(payload, 'capacity');
   const registeredCount = readInteger(payload, 'registeredCount');
+  const syncRevision = readInteger(payload, 'syncRevision');
   const registrants = readDarkroomScheduleRegistrants(payload);
   const removeDiscordIds = readStringArray(payload, 'removeDiscordIds');
   const channelId = readNullableString(payload, 'channelId');
@@ -244,8 +245,8 @@ function parseDarkroomScheduleEvent(
   const deleteChannel = readBoolean(payload, 'deleteChannel');
   const updateChannel = readBoolean(payload, 'updateChannel');
 
-  if (!slotId) {
-    throw new BadRequestError('Darkroom schedule slotId is required.');
+  if (!slotId || !isUuid(slotId)) {
+    throw new BadRequestError('Darkroom schedule slotId must be a UUID.');
   }
 
   if (!title) {
@@ -285,6 +286,17 @@ function parseDarkroomScheduleEvent(
   ) {
     throw new BadRequestError('Darkroom schedule registeredCount is invalid.');
   }
+  if (syncRevision === null || syncRevision < 0) {
+    throw new BadRequestError(
+      'Darkroom schedule syncRevision must be a non-negative integer.',
+    );
+  }
+
+  assertOptionalDiscordSnowflake(channelId, 'Darkroom schedule channelId');
+  assertOptionalDiscordSnowflake(messageId, 'Darkroom schedule messageId');
+  for (const discordId of removeDiscordIds ?? []) {
+    assertDiscordSnowflake(discordId, 'Darkroom schedule removeDiscordIds');
+  }
 
   if (
     notificationAction !== undefined &&
@@ -305,6 +317,7 @@ function parseDarkroomScheduleEvent(
     slotId,
     startsAt,
     status,
+    syncRevision,
     title,
     type: 'website.darkroom.schedule.sync',
     ...(channelId !== undefined ? { channelId } : {}),
@@ -343,6 +356,8 @@ function parseDarkroomWeeklyJoinMessageEvent(
       'Darkroom weekly join windowEnd must be after windowStart.',
     );
   }
+  assertOptionalDiscordSnowflake(channelId, 'Darkroom weekly channelId');
+  assertOptionalDiscordSnowflake(messageId, 'Darkroom weekly messageId');
 
   return {
     slots,
@@ -363,6 +378,7 @@ function parseStudioScheduleEvent(
   const startsAt = readString(payload, 'startsAt');
   const endsAt = readString(payload, 'endsAt');
   const status = readString(payload, 'status');
+  const syncRevision = readInteger(payload, 'syncRevision');
   const requester = readStudioScheduleRequester(payload);
   const channelId = readNullableString(payload, 'channelId');
   const messageId = readNullableString(payload, 'messageId');
@@ -371,8 +387,8 @@ function parseStudioScheduleEvent(
   const deleteChannel = readBoolean(payload, 'deleteChannel');
   const updateChannel = readBoolean(payload, 'updateChannel');
 
-  if (!requestId) {
-    throw new BadRequestError('Studio schedule requestId is required.');
+  if (!requestId || !isUuid(requestId)) {
+    throw new BadRequestError('Studio schedule requestId must be a UUID.');
   }
 
   if (!startsAt || Number.isNaN(Date.parse(startsAt))) {
@@ -392,6 +408,18 @@ function parseStudioScheduleEvent(
       'Studio schedule status must be approved or cancelled.',
     );
   }
+  if (syncRevision === null || syncRevision < 0) {
+    throw new BadRequestError(
+      'Studio schedule syncRevision must be a non-negative integer.',
+    );
+  }
+
+  assertOptionalDiscordSnowflake(channelId, 'Studio schedule channelId');
+  assertOptionalDiscordSnowflake(messageId, 'Studio schedule messageId');
+  assertOptionalDiscordSnowflake(
+    removeDiscordId,
+    'Studio schedule removeDiscordId',
+  );
 
   return {
     endsAt,
@@ -399,6 +427,7 @@ function parseStudioScheduleEvent(
     requester,
     startsAt,
     status,
+    syncRevision,
     type: 'website.studio.schedule.sync',
     ...(adminNote !== undefined ? { adminNote } : {}),
     ...(channelId !== undefined ? { channelId } : {}),
@@ -414,6 +443,14 @@ function parseStudioScheduleMessageEvent(
 ): StudioScheduleMessageInternalEvent {
   const channelId = readNullableString(payload, 'channelId');
   const messageId = readNullableString(payload, 'messageId');
+  assertOptionalDiscordSnowflake(
+    channelId,
+    'Studio schedule message channelId',
+  );
+  assertOptionalDiscordSnowflake(
+    messageId,
+    'Studio schedule message messageId',
+  );
 
   return {
     type: 'website.studio.schedule.message',
@@ -436,8 +473,8 @@ function parseStudioPendingReviewEvent(
   const needsStudioManager = readBoolean(payload, 'needsStudioManager');
   const requester = readStudioPendingReviewRequester(payload);
 
-  if (!requestId) {
-    throw new BadRequestError('Studio review requestId is required.');
+  if (!requestId || !isUuid(requestId)) {
+    throw new BadRequestError('Studio review requestId must be a UUID.');
   }
 
   if (!startsAt || Number.isNaN(Date.parse(startsAt))) {
@@ -464,6 +501,8 @@ function parseStudioPendingReviewEvent(
   if (needsStudioManager === undefined) {
     throw new BadRequestError('Studio review needsStudioManager is required.');
   }
+  assertOptionalDiscordSnowflake(channelId, 'Studio review channelId');
+  assertOptionalDiscordSnowflake(messageId, 'Studio review messageId');
 
   return {
     endsAt,
@@ -636,9 +675,9 @@ function readDarkroomWeeklyJoinSlots(
     const registeredCount = readInteger(slot, 'registeredCount');
     const availableCapacity = readInteger(slot, 'availableCapacity');
 
-    if (!slotId || !title) {
+    if (!slotId || !isUuid(slotId) || !title) {
       throw new BadRequestError(
-        'Darkroom weekly join slots need slotId and title.',
+        'Darkroom weekly join slots need a UUID slotId and title.',
       );
     }
 
@@ -786,6 +825,7 @@ function readDarkroomScheduleRegistrants(
         'Darkroom schedule registrants need discordId, name, registeredAt, and userId.',
       );
     }
+    assertDiscordSnowflake(discordId, 'Darkroom schedule registrant discordId');
 
     if (Number.isNaN(Date.parse(registeredAt))) {
       throw new BadRequestError(
@@ -819,6 +859,7 @@ function readStudioScheduleRequester(
       'Studio schedule requester needs discordId, name, and userId.',
     );
   }
+  assertDiscordSnowflake(discordId, 'Studio schedule requester discordId');
 
   return {
     discordId,
@@ -842,6 +883,10 @@ function readStudioPendingReviewRequester(
   if (!name || !userId) {
     throw new BadRequestError('Studio review requester needs name and userId.');
   }
+  assertOptionalDiscordSnowflake(
+    discordId,
+    'Studio review requester discordId',
+  );
 
   return {
     name,
@@ -1259,7 +1304,11 @@ function readStringArray(
     return undefined;
   }
 
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+  if (
+    !Array.isArray(value) ||
+    value.length > 25 ||
+    value.some((item) => typeof item !== 'string')
+  ) {
     throw new BadRequestError(`${key} must be an array of strings.`);
   }
 
@@ -1284,6 +1333,25 @@ function readBoolean(
   }
 
   return value;
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function assertDiscordSnowflake(value: string, label: string) {
+  if (!/^\d{17,20}$/.test(value)) {
+    throw new BadRequestError(`${label} must be a Discord snowflake.`);
+  }
+}
+
+function assertOptionalDiscordSnowflake(
+  value: string | null | undefined,
+  label: string,
+) {
+  if (typeof value === 'string') assertDiscordSnowflake(value, label);
 }
 
 function isGatewayEventType(

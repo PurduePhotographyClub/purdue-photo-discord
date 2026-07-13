@@ -20,7 +20,7 @@ import {
   sendDiscordMessage,
 } from './discordMessageService';
 import { requestWebsiteApi } from './websiteApiService';
-import { DiscordApiError } from '../utils/errors';
+import { BadRequestError, DiscordApiError } from '../utils/errors';
 import { getOptionalEnv, getRequiredEnv } from '../utils/env';
 import { createLogger } from '../utils/logger';
 
@@ -66,9 +66,11 @@ const STUDIO_CANCEL_REQUEST_CUSTOM_ID = 'studio_cancel_request';
 const STUDIO_REVIEW_NOTE_CUSTOM_ID = 'studio_review_note';
 
 interface DiscordChannel {
+  guild_id?: string;
   id: string;
   parent_id?: string | null;
   position?: number;
+  topic?: string | null;
 }
 
 interface DiscordMessageResult {
@@ -209,10 +211,14 @@ export async function postStudioPendingReviewMessage(
   event: StudioPendingReviewInternalEvent,
 ) {
   const channelId = event.channelId ?? STUDIO_PENDING_REVIEW_CHANNEL_ID;
+  if (channelId !== STUDIO_PENDING_REVIEW_CHANNEL_ID) {
+    throw new BadRequestError('Studio review channel is not allowed.');
+  }
   const payload = createStudioPendingReviewPayload(event);
   const { result, replacedStaleMessage } = await editOrSendStoredMessage(env, {
     channelId,
     messageId: event.messageId,
+    nonce: buildStudioReviewMessageNonce(event),
     ...payload,
   });
 
@@ -240,10 +246,16 @@ export async function postStudioScheduleMessage(
   event: StudioScheduleMessageInternalEvent,
 ) {
   const channelId = event.channelId ?? STUDIO_SCHEDULE_CHANNEL_ID;
+  if (channelId !== STUDIO_SCHEDULE_CHANNEL_ID) {
+    throw new BadRequestError(
+      'Studio schedule message channel is not allowed.',
+    );
+  }
   const payload = createStudioScheduleMessagePayload(env);
   const { result, replacedStaleMessage } = await editOrSendStoredMessage(env, {
     channelId,
     messageId: event.messageId,
+    nonce: 'st-schedule',
     ...payload,
   });
 
@@ -263,6 +275,7 @@ async function editOrSendStoredMessage(
     content?: string;
     embeds?: DiscordEmbed[];
     messageId?: string | null | undefined;
+    nonce: string;
   },
 ) {
   if (!input.messageId) {
@@ -273,6 +286,7 @@ async function editOrSendStoredMessage(
         components: input.components,
         content: input.content,
         embeds: input.embeds,
+        nonce: input.nonce,
       }),
     };
   }
@@ -305,6 +319,7 @@ async function editOrSendStoredMessage(
           components: input.components,
           content: input.content,
           embeds: input.embeds,
+          nonce: input.nonce,
         }),
       };
     }
@@ -494,48 +509,82 @@ export async function syncStudioScheduleChannel(
   env: Env,
   event: StudioScheduleSyncInternalEvent,
 ) {
-  if (event.deleteChannel === true) {
-    return deleteStudioChannel(env, event);
+  let syncEvent = event;
+  if (event.channelId) {
+    const channelExists = await assertStudioScheduleChannelOwnership(
+      env,
+      event.channelId,
+      event,
+    );
+    if (!channelExists) {
+      syncEvent = { ...event, channelId: null, messageId: null };
+    }
   }
 
-  let channelId = event.channelId ?? null;
+  if (!syncEvent.channelId) {
+    const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
+    const existingChannel = await findExistingStudioChannel(
+      env,
+      guildId,
+      syncEvent,
+    );
+    if (existingChannel) {
+      await assertStudioScheduleChannelOwnership(
+        env,
+        existingChannel.id,
+        syncEvent,
+      );
+      syncEvent = { ...syncEvent, channelId: existingChannel.id };
+    }
+  }
+
+  if (syncEvent.deleteChannel === true) {
+    return deleteStudioChannel(env, syncEvent);
+  }
+
+  let channelId = syncEvent.channelId ?? null;
   let didCreateChannel = false;
 
   if (!channelId) {
-    if (!isActiveStudioChannel(event)) {
+    if (!isActiveStudioChannel(syncEvent)) {
       return {
         channelId: null,
-        messageId: event.messageId ?? null,
+        messageId: syncEvent.messageId ?? null,
       };
     }
 
     const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
-    const channel = await createStudioChannel(env, guildId, event);
+    const channel = await createStudioChannel(env, guildId, syncEvent);
     channelId = channel.id;
     didCreateChannel = true;
   }
 
-  if (event.updateChannel === true || !didCreateChannel) {
-    await updateStudioChannel(env, channelId, event);
+  if (!didCreateChannel) {
+    await updateStudioChannel(env, channelId, syncEvent);
   }
-  await reconcileStudioPermissions(env, channelId, event);
+  await reconcileStudioPermissions(env, channelId, syncEvent);
 
-  const messageResult = event.messageId
-    ? await editOrSendStudioMessage(env, channelId, event.messageId, event)
-    : await sendStudioMessage(env, channelId, event);
+  const messageResult = syncEvent.messageId
+    ? await editOrSendStudioMessage(
+        env,
+        channelId,
+        syncEvent.messageId,
+        syncEvent,
+      )
+    : await sendStudioMessage(env, channelId, syncEvent);
 
   await notifyRequesterOfStudioManagerUpdate(env, {
-    adminNote: event.adminNote,
-    endsAt: event.endsAt,
-    requestId: event.requestId,
-    requesterDiscordId: event.requester.discordId,
-    startsAt: event.startsAt,
-    status: event.status,
+    adminNote: syncEvent.adminNote,
+    endsAt: syncEvent.endsAt,
+    requestId: syncEvent.requestId,
+    requesterDiscordId: syncEvent.requester.discordId,
+    startsAt: syncEvent.startsAt,
+    status: syncEvent.status,
   });
 
   return {
     channelId,
-    messageId: readMessageId(messageResult) ?? event.messageId ?? null,
+    messageId: readMessageId(messageResult) ?? syncEvent.messageId ?? null,
   };
 }
 
@@ -593,6 +642,75 @@ async function createStudioChannel(
 
   await moveChannelBelowStudioSchedule(env, guildId, channel.id);
   return channel;
+}
+
+async function findExistingStudioChannel(
+  env: Env,
+  guildId: string,
+  event: StudioScheduleSyncInternalEvent,
+) {
+  const channels = await discordApiRequest<DiscordChannel[]>(
+    env,
+    `/guilds/${guildId}/channels`,
+  );
+  const markerPrefix = `${buildStudioTopicOwnershipMarker(event)};REV=`;
+  return (
+    channels.find(
+      (channel) =>
+        channel.topic?.split(' | ').at(-1)?.startsWith(markerPrefix) === true &&
+        (channel.parent_id === STUDIO_SCHEDULE_CATEGORY_ID ||
+          channel.parent_id === STUDIO_RESOLVED_CATEGORY_ID),
+    ) ?? null
+  );
+}
+
+async function assertStudioScheduleChannelOwnership(
+  env: Env,
+  channelId: string,
+  event: StudioScheduleSyncInternalEvent,
+) {
+  let channel: DiscordChannel;
+  try {
+    channel = await discordApiRequest<DiscordChannel>(
+      env,
+      `/channels/${channelId}`,
+    );
+  } catch (error) {
+    if (isDiscordNotFoundError(error)) return false;
+    throw error;
+  }
+
+  const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
+  const isAllowedCategory =
+    channel.parent_id === STUDIO_SCHEDULE_CATEGORY_ID ||
+    channel.parent_id === STUDIO_RESOLVED_CATEGORY_ID;
+  const markerPrefix = `${buildStudioTopicOwnershipMarker(event)};REV=`;
+  if (channel.guild_id !== guildId || !isAllowedCategory || !channel.topic) {
+    throw new BadRequestError('Studio schedule channel ownership mismatch.');
+  }
+
+  const terminalMarker = channel.topic.split(' | ').at(-1);
+  if (terminalMarker?.startsWith(markerPrefix)) {
+    const storedRevision = Number(terminalMarker.slice(markerPrefix.length));
+    if (
+      !Number.isInteger(storedRevision) ||
+      storedRevision > event.syncRevision
+    ) {
+      throw new BadRequestError('Studio schedule event is stale.');
+    }
+    return true;
+  }
+
+  const legacyPrefix = `Studio reservation: ${formatPlainDateTime(event.startsAt)} - ${formatPlainDateTime(event.endsAt)} | Member ${event.requester.name} | `;
+  if (!channel.topic.startsWith(legacyPrefix)) {
+    throw new BadRequestError('Studio schedule channel marker mismatch.');
+  }
+
+  await discordApiRequest(env, `/channels/${channelId}`, {
+    body: JSON.stringify({ topic: buildStudioTopic(event) }),
+    method: 'PATCH',
+  });
+  return true;
 }
 
 async function updateStudioChannel(
@@ -714,7 +832,20 @@ async function sendStudioMessage(
     components: buildStudioSessionComponents(env, event),
     content: buildStudioSessionContent(event),
     embeds: [buildStudioSessionEmbed(event)],
+    nonce: buildStudioScheduleMessageNonce(event),
   });
+}
+
+function buildStudioScheduleMessageNonce(
+  event: StudioScheduleSyncInternalEvent,
+) {
+  return `st-slot-${event.requestId.slice(-16)}`;
+}
+
+function buildStudioReviewMessageNonce(
+  event: StudioPendingReviewInternalEvent,
+) {
+  return `st-review-${event.requestId.slice(-15)}`;
 }
 
 async function editStudioMessage(
@@ -1124,6 +1255,7 @@ async function notifyRequesterOfStudioManagerUpdate(
         startsAt: input.startsAt,
         status: input.status,
       }),
+      nonce: `std-${input.status[0]}-${input.requestId.slice(-12)}`,
       recipientId: requesterDiscordId,
     });
   } catch (error) {
@@ -1187,14 +1319,23 @@ function buildStudioChannelName(event: StudioScheduleSyncInternalEvent) {
 }
 
 function buildStudioTopic(event: StudioScheduleSyncInternalEvent) {
-  return truncate(
-    [
-      `Studio reservation: ${formatPlainDateTime(event.startsAt)} - ${formatPlainDateTime(event.endsAt)}`,
-      `Member ${event.requester.name}`,
-      event.status === 'cancelled' ? 'Cancelled' : 'Approved',
-    ].join(' | '),
-    1_024,
-  );
+  const marker = buildStudioTopicMarker(event);
+  const details = [
+    `Studio reservation: ${formatPlainDateTime(event.startsAt)} - ${formatPlainDateTime(event.endsAt)}`,
+    `Member ${event.requester.name}`,
+    event.status === 'cancelled' ? 'Cancelled' : 'Approved',
+  ].join(' | ');
+  return `${truncate(details, 1_024 - marker.length - 3)} | ${marker}`;
+}
+
+function buildStudioTopicMarker(event: StudioScheduleSyncInternalEvent) {
+  return `${buildStudioTopicOwnershipMarker(event)};REV=${event.syncRevision}`;
+}
+
+function buildStudioTopicOwnershipMarker(
+  event: StudioScheduleSyncInternalEvent,
+) {
+  return `PCC_STUDIO_REQUEST=${event.requestId}`;
 }
 
 function isActiveStudioChannel(event: StudioScheduleSyncInternalEvent) {

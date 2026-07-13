@@ -84,6 +84,7 @@ export interface DarkroomScheduleSyncInternalEvent {
   slotId: string;
   startsAt: string;
   status: 'cancelled' | 'open';
+  syncRevision: number;
   title: string;
   type: 'website.darkroom.schedule.sync';
   updateChannel?: boolean;
@@ -127,6 +128,7 @@ export interface StudioScheduleSyncInternalEvent {
   requester: StudioScheduleRequester;
   startsAt: string;
   status: 'approved' | 'cancelled';
+  syncRevision: number;
   type: 'website.studio.schedule.sync';
   updateChannel?: boolean;
 }

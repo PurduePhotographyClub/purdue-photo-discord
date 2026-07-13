@@ -118,8 +118,9 @@ async function handleDarkroomWeeklyJoinMessageEvent(
   return {
     channelId: result.channelId,
     messageId: result.messageId,
-    ok: true,
+    ok: result.ok,
     slotCount: event.slots.length,
+    stale: result.stale,
     type: event.type,
   };
 }
