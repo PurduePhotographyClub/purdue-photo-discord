@@ -12,6 +12,7 @@ import type { ParsedInternalEvent } from '../internal-events/types';
 import { isAppError } from '../utils/errors';
 import { errorJsonResponse, jsonResponse, readJson } from '../utils/json';
 import { createLogger } from '../utils/logger';
+import { retryDiscordRateLimitedOperation } from '../discord/api';
 
 const INTERNAL_EVENT_BODY_LIMIT_BYTES = 64 * 1_024;
 const logger = createLogger('internal-events');
@@ -79,7 +80,13 @@ async function handleInternalEventsRequest(
     ...getInternalEventLogContext(parsedEvent),
   });
 
-  const responseBody = await dispatchInternalEvent(parsedEvent, env, context);
+  const dispatch = () => dispatchInternalEvent(parsedEvent, env, context);
+  const responseBody = isSchedulingEvent(parsedEvent)
+    ? await retryDiscordRateLimitedOperation(dispatch, {
+        maxRetries: 1,
+        maxRetryDelayMs: 15_000,
+      })
+    : await dispatch();
   logger.info('Handled internal event.', {
     ...requestLog,
     ...getInternalEventLogContext(parsedEvent),
@@ -88,6 +95,15 @@ async function handleInternalEventsRequest(
   });
 
   return jsonResponse(responseBody);
+}
+
+function isSchedulingEvent(parsedEvent: ParsedInternalEvent) {
+  return (
+    parsedEvent.kind === 'darkroomSchedule' ||
+    parsedEvent.kind === 'darkroomWeeklyJoinMessage' ||
+    parsedEvent.kind === 'studioSchedule' ||
+    parsedEvent.kind === 'studioScheduleMessage'
+  );
 }
 
 function createRequestLogContext(request: Request): RequestLogContext {

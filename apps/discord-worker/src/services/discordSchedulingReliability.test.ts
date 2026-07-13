@@ -3,6 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import {
+  discordApiRequest,
+  retryDiscordRateLimitedOperation,
+} from '../discord/api';
+import type { Env } from '../discord/types';
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const readSource = async (relativePath: string) =>
@@ -19,6 +24,9 @@ test('internal scheduling events authenticate before parsing or logging payload 
   assert.ok(authorizeIndex > 0);
   assert.ok(authorizeIndex < parseIndex);
   assert.ok(authorizeIndex < receivedLogIndex);
+  assert.match(source, /isSchedulingEvent\(parsedEvent\)/);
+  assert.match(source, /retryDiscordRateLimitedOperation/);
+  assert.match(source, /maxRetryDelayMs:\s*15_000/);
 });
 
 test('schedule event revisions cross the parser boundary', async () => {
@@ -87,6 +95,14 @@ test('darkroom interaction synchronization settles channel and weekly work indep
   assert.match(source, /weekly refresh is missing its message ID/);
 });
 
+test('darkroom permission and notification fan-out uses bounded concurrency', async () => {
+  const source = await readSource('./discordDarkroomScheduleService.ts');
+
+  assert.match(source, /DARKROOM_DISCORD_MUTATION_CONCURRENCY\s*=\s*2/);
+  assert.match(source, /runWithConcurrency\(\s*changes/);
+  assert.match(source, /runWithConcurrency\(\s*discordIds/);
+});
+
 test('stale weekly messages are reported and existing schedule markers advance', async () => {
   const [dispatcher, darkroom, studio] = await Promise.all([
     readSource('../internal-events/dispatcher.ts'),
@@ -104,5 +120,107 @@ test('Discord retry-after values are treated as seconds without a millisecond he
 
   assert.doesNotMatch(source, /retryAfter > 50/);
   assert.match(source, /retryAfter \* 1_000/);
-  assert.match(source, /DISCORD_MAX_INLINE_RETRY_DELAY_MS\s*=\s*500/);
+});
+
+test('generic Discord callers do not wait through a scheduling-sized rate limit', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestCount = 0;
+  globalThis.fetch = async () => {
+    requestCount += 1;
+    return Response.json(
+      { message: 'You are being rate limited.', retry_after: 0.75 },
+      { status: 429 },
+    );
+  };
+
+  try {
+    await assert.rejects(
+      discordApiRequest(
+        { DISCORD_TOKEN: 'test-token' } as Env,
+        '/channels/123456789012345678',
+      ),
+      { name: 'DiscordApiError' },
+    );
+    assert.equal(requestCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('darkroom cancellation retries a recoverable Discord 429 from the response body', async () => {
+  const originalFetch = globalThis.fetch;
+  const responses = [
+    Response.json(
+      { message: 'You are being rate limited.', retry_after: 0.75 },
+      { status: 429 },
+    ),
+    Response.json({ id: 'cancelled-channel' }),
+  ];
+  let requestCount = 0;
+
+  globalThis.fetch = async () => {
+    const response = responses[requestCount];
+    requestCount += 1;
+    assert.ok(response, 'Discord received more than one retry');
+    return response;
+  };
+
+  try {
+    const result = await retryDiscordRateLimitedOperation(
+      () =>
+        discordApiRequest<{ id: string }>(
+          { DISCORD_TOKEN: 'test-token' } as Env,
+          '/channels/123456789012345678',
+          {
+            body: JSON.stringify({ parent_id: '234567890123456789' }),
+            method: 'PATCH',
+          },
+        ),
+      { maxRetryDelayMs: 15_000 },
+    );
+
+    assert.equal(requestCount, 2);
+    assert.deepEqual(result, { id: 'cancelled-channel' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('darkroom resync retries a recoverable Discord 429 from the Retry-After header', async () => {
+  const originalFetch = globalThis.fetch;
+  const responses = [
+    new Response(JSON.stringify({ message: 'You are being rate limited.' }), {
+      headers: { 'retry-after': '0.75' },
+      status: 429,
+    }),
+    Response.json({ id: 'resynced-message' }),
+  ];
+  let requestCount = 0;
+
+  globalThis.fetch = async () => {
+    const response = responses[requestCount];
+    requestCount += 1;
+    assert.ok(response, 'Discord received more than one retry');
+    return response;
+  };
+
+  try {
+    const result = await retryDiscordRateLimitedOperation(
+      () =>
+        discordApiRequest<{ id: string }>(
+          { DISCORD_TOKEN: 'test-token' } as Env,
+          '/channels/123456789012345678/messages/345678901234567890',
+          {
+            body: JSON.stringify({ content: 'Updated darkroom schedule' }),
+            method: 'PATCH',
+          },
+        ),
+      { maxRetryDelayMs: 15_000 },
+    );
+
+    assert.equal(requestCount, 2);
+    assert.deepEqual(result, { id: 'resynced-message' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -92,6 +92,7 @@ export function isDarkroomScheduleJoinSelectCustomId(customId: string) {
 export const DARKROOM_SCHEDULE_END_CUSTOM_ID_PREFIX = 'darkroom_schedule_end:';
 export const DARKROOM_SCHEDULE_CANCEL_CUSTOM_ID_PREFIX =
   'darkroom_schedule_cancel:';
+const DARKROOM_DISCORD_MUTATION_CONCURRENCY = 2;
 
 export function isDarkroomScheduleSessionActionCustomId(customId: string) {
   return (
@@ -563,14 +564,25 @@ async function reconcileSchedulePermissions(
       : []),
   ].filter((discordId) => !activeDiscordIds.has(discordId));
 
-  await Promise.all([
-    ...[...activeDiscordIds].map((discordId) =>
-      allowMemberInScheduleChannel(env, channelId, discordId),
-    ),
-    ...unique(idsToRemove).map((discordId) =>
-      removeMemberFromScheduleChannel(env, channelId, discordId),
-    ),
-  ]);
+  const changes = [
+    ...[...activeDiscordIds].map((discordId) => ({
+      action: 'allow' as const,
+      discordId,
+    })),
+    ...unique(idsToRemove).map((discordId) => ({
+      action: 'remove' as const,
+      discordId,
+    })),
+  ];
+
+  await runWithConcurrency(
+    changes,
+    DARKROOM_DISCORD_MUTATION_CONCURRENCY,
+    (change) =>
+      change.action === 'allow'
+        ? allowMemberInScheduleChannel(env, channelId, change.discordId)
+        : removeMemberFromScheduleChannel(env, channelId, change.discordId),
+  );
 }
 
 async function allowMemberInScheduleChannel(
@@ -971,8 +983,10 @@ async function notifyDarkroomRegistrantsOfScheduleAction(
     }),
   );
 
-  await Promise.all(
-    discordIds.map(async (discordId) => {
+  await runWithConcurrency(
+    discordIds,
+    DARKROOM_DISCORD_MUTATION_CONCURRENCY,
+    async (discordId) => {
       try {
         await sendDiscordDirectMessage(env, {
           content: buildDarkroomScheduleActionDmContent(event),
@@ -986,6 +1000,25 @@ async function notifyDarkroomRegistrantsOfScheduleAction(
           notificationAction: event.notificationAction,
           recipientId: discordId,
         });
+      }
+    },
+  );
+}
+
+async function runWithConcurrency<Item>(
+  items: readonly Item[],
+  concurrency: number,
+  operation: (item: Item) => Promise<unknown>,
+) {
+  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async (_, workerIndex) => {
+      for (
+        let itemIndex = workerIndex;
+        itemIndex < items.length;
+        itemIndex += workerCount
+      ) {
+        await operation(items[itemIndex] as Item);
       }
     }),
   );
@@ -1235,6 +1268,9 @@ async function syncDarkroomInteractionState(
       | undefined;
   },
 ) {
+  // Component interactions have a short acknowledgement window. Keep these
+  // independent views concurrent; longer rate-limit waits are scoped to the
+  // authenticated internal scheduling route instead.
   const results = await Promise.allSettled([
     ...(input.syncEvent
       ? [syncDarkroomScheduleAndPersist(env, input.syncEvent)]
