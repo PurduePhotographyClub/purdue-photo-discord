@@ -66,6 +66,8 @@ async function handleInternalEventsRequest(
   startedAt: number,
 ): Promise<Response> {
   const authRequest = request.clone();
+  await authorizeGatewayRequest(authRequest, env);
+
   const parsedEvent = parseInternalEvent(
     await readJson(request, {
       maxBytes: INTERNAL_EVENT_BODY_LIMIT_BYTES,
@@ -76,8 +78,6 @@ async function handleInternalEventsRequest(
     ...requestLog,
     ...getInternalEventLogContext(parsedEvent),
   });
-
-  await authorizeGatewayRequest(authRequest, env);
 
   const responseBody = await dispatchInternalEvent(parsedEvent, env, context);
   logger.info('Handled internal event.', {

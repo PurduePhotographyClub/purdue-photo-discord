@@ -232,25 +232,29 @@ test('a stale channel is reported even when the borrower delivery fails', async 
   });
 });
 
-test('nonce-bearing messages reconcile a recent Discord delivery before posting', async () => {
+test('nonce-bearing messages reconcile an ambiguous Discord delivery after posting', async () => {
   let postAttempts = 0;
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     const method = init?.method ?? 'GET';
 
+    if (method === 'POST' && url.pathname.endsWith('/messages')) {
+      postAttempts += 1;
+      throw new Error('Connection closed after request upload');
+    }
     if (
       method === 'GET' &&
       url.pathname === '/api/v10/channels/channel-123/messages'
     ) {
       assert.equal(url.searchParams.get('limit'), '100');
       return Response.json([
-        { id: 'existing-message', nonce: 'stable-reminder-nonce' },
+        {
+          author: { bot: true, id: 'application-123' },
+          id: 'existing-message',
+          nonce: 'stable-reminder-nonce',
+        },
       ]);
     }
-    if (method === 'POST') {
-      postAttempts += 1;
-    }
-
     throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
   };
 
@@ -261,16 +265,49 @@ test('nonce-bearing messages reconcile a recent Discord delivery before posting'
   });
 
   assert.deepEqual(result, {
+    author: { bot: true, id: 'application-123' },
     id: 'existing-message',
     nonce: 'stable-reminder-nonce',
   });
-  assert.equal(postAttempts, 0);
+  assert.equal(postAttempts, 1);
+});
+
+test('nonce reconciliation never adopts another author message', async () => {
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+
+    if (method === 'POST' && url.pathname.endsWith('/messages')) {
+      throw new Error('Connection closed after request upload');
+    }
+    if (method === 'GET' && url.pathname.endsWith('/messages')) {
+      return Response.json([
+        {
+          author: { bot: false, id: 'foreign-user' },
+          id: 'foreign-message',
+          nonce: 'stable-reminder-nonce',
+        },
+      ]);
+    }
+
+    throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
+  };
+
+  await assert.rejects(
+    sendDiscordMessage(createEnv(), {
+      channelId: 'channel-123',
+      content: 'Reminder',
+      nonce: 'stable-reminder-nonce',
+    }),
+    /Connection closed after request upload/,
+  );
 });
 
 function createEnv(): Env {
   return {
     DISCORD_TOKEN: 'test-discord-token',
     DISCORD_GUILD_ID: 'guild-123',
+    DISCORD_APPLICATION_ID: 'application-123',
   };
 }
 

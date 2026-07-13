@@ -46,9 +46,11 @@ const DARKROOM_SCHEDULE_JOIN_CHANNEL_ID = '1512900016979837161';
 const logger = createLogger('darkroom-schedule');
 
 interface DiscordChannel {
+  guild_id?: string;
   id: string;
   parent_id?: string | null;
   position?: number;
+  topic?: string | null;
 }
 
 interface DiscordMessageResult {
@@ -104,17 +106,28 @@ export async function postDarkroomWeeklyJoinMessage(
   options: { allowCreate?: boolean } = {},
 ) {
   const channelId = event.channelId ?? DARKROOM_SCHEDULE_JOIN_CHANNEL_ID;
+  if (channelId !== DARKROOM_SCHEDULE_JOIN_CHANNEL_ID) {
+    throw new BadRequestError(
+      'Darkroom weekly message channel is not allowed.',
+    );
+  }
   const payload = createWeeklyJoinMessagePayload(env, event);
   const result = await editOrSendWeeklyJoinMessage(env, {
     allowCreate: options.allowCreate === true,
     channelId,
+    nonce: buildDarkroomWeeklyMessageNonce(event),
     ...(event.messageId !== undefined ? { messageId: event.messageId } : {}),
     ...payload,
   });
 
   return {
     channelId,
-    messageId: readMessageId(result) ?? event.messageId ?? null,
+    messageId:
+      result === null
+        ? null
+        : (readMessageId(result) ?? event.messageId ?? null),
+    ok: result !== null,
+    stale: result === null && !!event.messageId,
   };
 }
 
@@ -141,16 +154,19 @@ export async function handleDarkroomScheduleDropButton(
   );
   const dropResponse = readDiscordScheduleDropResponse(result);
 
-  if (dropResponse.syncEvent) {
-    await syncDarkroomScheduleChannel(env, dropResponse.syncEvent);
-  }
-  await syncWeeklyJoinMessages(env, dropResponse.weeklyJoinMessageEvents);
+  const syncWarning = await syncDarkroomInteractionState(env, {
+    syncEvent: dropResponse.syncEvent,
+    weeklyJoinMessageEvents: dropResponse.weeklyJoinMessageEvents,
+  });
 
   return ephemeralResponse(
-    dropResponse.message ??
-      (dropResponse.dropped
-        ? 'You have been dropped from this darkroom timeslot.'
-        : 'You were not registered for this darkroom timeslot.'),
+    appendDarkroomSyncWarning(
+      dropResponse.message ??
+        (dropResponse.dropped
+          ? 'You have been dropped from this darkroom timeslot.'
+          : 'You were not registered for this darkroom timeslot.'),
+      syncWarning,
+    ),
   );
 }
 
@@ -182,16 +198,19 @@ export async function handleDarkroomScheduleSessionActionButton(
   );
   const actionResponse = readDiscordScheduleSessionActionResponse(result);
 
-  if (actionResponse.syncEvent) {
-    await syncDarkroomScheduleChannel(env, actionResponse.syncEvent);
-  }
-  await syncWeeklyJoinMessages(env, actionResponse.weeklyJoinMessageEvents);
+  const syncWarning = await syncDarkroomInteractionState(env, {
+    syncEvent: actionResponse.syncEvent,
+    weeklyJoinMessageEvents: actionResponse.weeklyJoinMessageEvents,
+  });
 
   return ephemeralResponse(
-    actionResponse.message ??
-      (action === 'cancel'
-        ? 'Darkroom session cancelled and archived.'
-        : 'Darkroom session ended and archived.'),
+    appendDarkroomSyncWarning(
+      actionResponse.message ??
+        (action === 'cancel'
+          ? 'Darkroom session cancelled and archived.'
+          : 'Darkroom session ended and archived.'),
+      syncWarning,
+    ),
   );
 }
 
@@ -218,22 +237,22 @@ export async function handleDarkroomScheduleJoinSelect(
   );
   const joinResponse = readDiscordScheduleJoinResponse(result);
 
-  if (joinResponse.syncEvent) {
-    await syncDarkroomScheduleChannel(env, joinResponse.syncEvent);
-  }
-  await syncWeeklyJoinMessages(
-    env,
-    bindWeeklyJoinEventsToInteractionMessage(
+  const syncWarning = await syncDarkroomInteractionState(env, {
+    syncEvent: joinResponse.syncEvent,
+    weeklyJoinMessageEvents: bindWeeklyJoinEventsToInteractionMessage(
       joinResponse.weeklyJoinMessageEvents,
       interaction,
     ),
-  );
+  });
 
   return ephemeralResponse(
-    joinResponse.message ??
-      (joinResponse.joined
-        ? 'You joined this darkroom timeslot.'
-        : 'I could not join that darkroom timeslot.'),
+    appendDarkroomSyncWarning(
+      joinResponse.message ??
+        (joinResponse.joined
+          ? 'You joined this darkroom timeslot.'
+          : 'I could not join that darkroom timeslot.'),
+      syncWarning,
+    ),
   );
 }
 
@@ -241,41 +260,75 @@ export async function syncDarkroomScheduleChannel(
   env: Env,
   event: DarkroomScheduleSyncInternalEvent,
 ) {
-  if (event.deleteChannel === true) {
-    return deleteScheduleChannel(env, event);
+  let syncEvent = event;
+  if (event.channelId) {
+    const channelExists = await assertDarkroomScheduleChannelOwnership(
+      env,
+      event.channelId,
+      event,
+    );
+    if (!channelExists) {
+      syncEvent = { ...event, channelId: null, messageId: null };
+    }
   }
 
-  if (shouldArchiveScheduleChannel(event)) {
-    return archiveScheduleChannel(env, event);
+  if (!syncEvent.channelId) {
+    const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
+    const existingChannel = await findExistingScheduleChannel(
+      env,
+      guildId,
+      syncEvent,
+    );
+    if (existingChannel) {
+      await assertDarkroomScheduleChannelOwnership(
+        env,
+        existingChannel.id,
+        syncEvent,
+      );
+      syncEvent = { ...syncEvent, channelId: existingChannel.id };
+    }
   }
 
-  let channelId = event.channelId ?? null;
+  if (syncEvent.deleteChannel === true) {
+    return deleteScheduleChannel(env, syncEvent);
+  }
+
+  if (shouldArchiveScheduleChannel(syncEvent)) {
+    return archiveScheduleChannel(env, syncEvent);
+  }
+
+  let channelId = syncEvent.channelId ?? null;
   let didCreateChannel = false;
 
   if (!channelId) {
     const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
-    const channel = await createScheduleChannel(env, guildId, event);
+    const channel = await createScheduleChannel(env, guildId, syncEvent);
     channelId = channel.id;
     didCreateChannel = true;
   }
 
-  if (event.updateChannel === true && !didCreateChannel) {
+  if (!didCreateChannel) {
     await updateScheduleChannel(
       env,
       channelId,
-      event,
+      syncEvent,
       DARKROOM_SCHEDULE_CATEGORY_ID,
     );
   }
-  await reconcileSchedulePermissions(env, channelId, event);
+  await reconcileSchedulePermissions(env, channelId, syncEvent);
 
-  const messageResult = event.messageId
-    ? await editOrSendScheduleMessage(env, channelId, event.messageId, event)
-    : await sendScheduleMessage(env, channelId, event);
+  const messageResult = syncEvent.messageId
+    ? await editOrSendScheduleMessage(
+        env,
+        channelId,
+        syncEvent.messageId,
+        syncEvent,
+      )
+    : await sendScheduleMessage(env, channelId, syncEvent);
 
   return {
     channelId,
-    messageId: readMessageId(messageResult) ?? event.messageId ?? null,
+    messageId: readMessageId(messageResult) ?? syncEvent.messageId ?? null,
   };
 }
 
@@ -371,6 +424,75 @@ async function createScheduleChannel(
 
   await moveChannelBelowAnchor(env, guildId, channel.id);
   return channel;
+}
+
+async function findExistingScheduleChannel(
+  env: Env,
+  guildId: string,
+  event: DarkroomScheduleSyncInternalEvent,
+) {
+  const channels = await discordApiRequest<DiscordChannel[]>(
+    env,
+    `/guilds/${guildId}/channels`,
+  );
+  const markerPrefix = `${buildScheduleTopicOwnershipMarker(event)};REV=`;
+  return (
+    channels.find(
+      (channel) =>
+        channel.topic?.split(' | ').at(-1)?.startsWith(markerPrefix) === true &&
+        (channel.parent_id === DARKROOM_SCHEDULE_CATEGORY_ID ||
+          channel.parent_id === DARKROOM_SCHEDULE_ARCHIVE_CATEGORY_ID),
+    ) ?? null
+  );
+}
+
+async function assertDarkroomScheduleChannelOwnership(
+  env: Env,
+  channelId: string,
+  event: DarkroomScheduleSyncInternalEvent,
+) {
+  let channel: DiscordChannel;
+  try {
+    channel = await discordApiRequest<DiscordChannel>(
+      env,
+      `/channels/${channelId}`,
+    );
+  } catch (error) {
+    if (error instanceof DiscordApiError && error.status === 404) return false;
+    throw error;
+  }
+
+  const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
+  const isAllowedCategory =
+    channel.parent_id === DARKROOM_SCHEDULE_CATEGORY_ID ||
+    channel.parent_id === DARKROOM_SCHEDULE_ARCHIVE_CATEGORY_ID;
+  const markerPrefix = `${buildScheduleTopicOwnershipMarker(event)};REV=`;
+  if (channel.guild_id !== guildId || !isAllowedCategory || !channel.topic) {
+    throw new BadRequestError('Darkroom schedule channel ownership mismatch.');
+  }
+
+  const terminalMarker = channel.topic.split(' | ').at(-1);
+  if (terminalMarker?.startsWith(markerPrefix)) {
+    const storedRevision = Number(terminalMarker.slice(markerPrefix.length));
+    if (
+      !Number.isInteger(storedRevision) ||
+      storedRevision > event.syncRevision
+    ) {
+      throw new BadRequestError('Darkroom schedule event is stale.');
+    }
+    return true;
+  }
+
+  const legacyPrefix = `${event.title}: ${formatPlainDateTime(event.startsAt)} - ${formatPlainDateTime(event.endsAt)} | Capacity `;
+  if (!channel.topic.startsWith(legacyPrefix)) {
+    throw new BadRequestError('Darkroom schedule channel marker mismatch.');
+  }
+
+  await discordApiRequest(env, `/channels/${channelId}`, {
+    body: JSON.stringify({ topic: buildScheduleTopic(event) }),
+    method: 'PATCH',
+  });
+  return true;
 }
 
 async function updateScheduleChannel(
@@ -500,7 +622,14 @@ async function sendScheduleMessage(
     components: buildScheduleComponents(env, event),
     content: buildScheduleContent(event),
     embeds: [buildScheduleEmbed(event)],
+    nonce: buildDarkroomScheduleMessageNonce(event),
   });
+}
+
+function buildDarkroomScheduleMessageNonce(
+  event: DarkroomScheduleSyncInternalEvent,
+) {
+  return `dr-slot-${event.slotId.slice(-16)}`;
 }
 
 async function editScheduleMessage(
@@ -544,6 +673,7 @@ async function editOrSendWeeklyJoinMessage(
     content?: string;
     embeds?: DiscordEmbed[];
     messageId?: string | null;
+    nonce: string;
   },
 ) {
   if (!input.messageId) {
@@ -559,6 +689,7 @@ async function editOrSendWeeklyJoinMessage(
       components: input.components,
       content: input.content,
       embeds: input.embeds,
+      nonce: input.nonce,
     });
   }
 
@@ -596,11 +727,18 @@ async function editOrSendWeeklyJoinMessage(
         components: input.components,
         content: input.content,
         embeds: input.embeds,
+        nonce: input.nonce,
       });
     }
 
     throw error;
   }
+}
+
+function buildDarkroomWeeklyMessageNonce(
+  event: DarkroomScheduleWeeklyJoinMessageInternalEvent,
+) {
+  return `dr-week-${Math.floor(Date.parse(event.windowStart) / 1_000).toString(36)}`;
 }
 
 function buildInitialPermissionOverwrites(guildId: string) {
@@ -838,6 +976,7 @@ async function notifyDarkroomRegistrantsOfScheduleAction(
       try {
         await sendDiscordDirectMessage(env, {
           content: buildDarkroomScheduleActionDmContent(event),
+          nonce: buildDarkroomScheduleActionDmNonce(event, discordId),
           recipientId: discordId,
         });
       } catch (error) {
@@ -850,6 +989,14 @@ async function notifyDarkroomRegistrantsOfScheduleAction(
       }
     }),
   );
+}
+
+function buildDarkroomScheduleActionDmNonce(
+  event: DarkroomScheduleSyncInternalEvent,
+  discordId: string,
+) {
+  const action = event.notificationAction === 'cancel' ? 'c' : 'e';
+  return `drd-${action}-${event.slotId.slice(-8)}-${discordId.slice(-8)}`;
 }
 
 function buildDarkroomScheduleActionDmContent(
@@ -898,16 +1045,25 @@ function buildScheduleChannelName(event: DarkroomScheduleSyncInternalEvent) {
 }
 
 function buildScheduleTopic(event: DarkroomScheduleSyncInternalEvent) {
-  return truncate(
-    [
-      `${event.title}: ${formatPlainDateTime(event.startsAt)} - ${formatPlainDateTime(event.endsAt)}`,
-      `Capacity ${event.registeredCount}/${event.capacity}`,
-      getScheduleTopicStatus(event),
-    ]
-      .filter(Boolean)
-      .join(' | '),
-    1_024,
-  );
+  const marker = buildScheduleTopicMarker(event);
+  const details = [
+    `${event.title}: ${formatPlainDateTime(event.startsAt)} - ${formatPlainDateTime(event.endsAt)}`,
+    `Capacity ${event.registeredCount}/${event.capacity}`,
+    getScheduleTopicStatus(event),
+  ]
+    .filter(Boolean)
+    .join(' | ');
+  return `${truncate(details, 1_024 - marker.length - 3)} | ${marker}`;
+}
+
+function buildScheduleTopicMarker(event: DarkroomScheduleSyncInternalEvent) {
+  return `${buildScheduleTopicOwnershipMarker(event)};REV=${event.syncRevision}`;
+}
+
+function buildScheduleTopicOwnershipMarker(
+  event: DarkroomScheduleSyncInternalEvent,
+) {
+  return `PCC_DARKROOM_SLOT=${event.slotId}`;
 }
 
 function shouldArchiveScheduleChannel(
@@ -1043,8 +1199,8 @@ async function syncWeeklyJoinMessages(
   env: Env,
   events: DarkroomScheduleWeeklyJoinMessageInternalEvent[] | undefined,
 ) {
-  await Promise.all(
-    (events ?? []).flatMap((event) => {
+  const results = await Promise.all(
+    (events ?? []).map((event) => {
       if (!event.messageId) {
         logger.warn(
           'Skipping darkroom weekly join refresh without message ID.',
@@ -1053,14 +1209,74 @@ async function syncWeeklyJoinMessages(
             windowStart: event.windowStart,
           },
         );
-        return [];
+        return Promise.reject(
+          new Error('Darkroom weekly refresh is missing its message ID.'),
+        );
       }
 
-      return [
-        postDarkroomWeeklyJoinMessage(env, event, { allowCreate: false }),
-      ];
+      return postDarkroomWeeklyJoinMessage(env, event, {
+        allowCreate: false,
+      });
     }),
   );
+  if (results.some((result) => result.ok !== true)) {
+    throw new Error(
+      'One or more darkroom weekly messages could not be refreshed.',
+    );
+  }
+}
+
+async function syncDarkroomInteractionState(
+  env: Env,
+  input: {
+    syncEvent?: DarkroomScheduleSyncInternalEvent | undefined;
+    weeklyJoinMessageEvents?:
+      | DarkroomScheduleWeeklyJoinMessageInternalEvent[]
+      | undefined;
+  },
+) {
+  const results = await Promise.allSettled([
+    ...(input.syncEvent
+      ? [syncDarkroomScheduleAndPersist(env, input.syncEvent)]
+      : []),
+    syncWeeklyJoinMessages(env, input.weeklyJoinMessageEvents),
+  ]);
+  const failed = results.filter((result) => result.status === 'rejected');
+  if (failed.length === 0) return false;
+
+  logger.warn(
+    'Darkroom interaction saved but Discord views did not fully sync.',
+    {
+      failedSyncs: failed.length,
+    },
+  );
+  return true;
+}
+
+async function syncDarkroomScheduleAndPersist(
+  env: Env,
+  event: DarkroomScheduleSyncInternalEvent,
+) {
+  const result = await syncDarkroomScheduleChannel(env, event);
+  await requestWebsiteApi(
+    env,
+    `/darkroom/schedule/${encodeURIComponent(event.slotId)}/sync-result-by-discord`,
+    {
+      body: {
+        channelId: result.channelId,
+        messageId: result.messageId,
+        syncRevision: event.syncRevision,
+      },
+      method: 'POST',
+    },
+  );
+  return result;
+}
+
+function appendDarkroomSyncWarning(message: string, hasWarning: boolean) {
+  return hasWarning
+    ? `${message} Some Discord views may take a moment to catch up.`
+    : message;
 }
 
 function bindWeeklyJoinEventsToInteractionMessage(
@@ -1073,24 +1289,21 @@ function bindWeeklyJoinEventsToInteractionMessage(
   }
 
   const sourceChannelId = interaction.channel_id;
-  const fallbackEvent = events[0];
-  if (!fallbackEvent) {
-    return [];
-  }
-
   const sourceEvent =
     events.find((event) => event.messageId === sourceMessageId) ??
     events.find(
       (event) => sourceChannelId && event.channelId === sourceChannelId,
     ) ??
-    fallbackEvent;
+    (events.length === 1 ? events[0] : undefined);
+  if (!sourceEvent) return events;
+
   const boundEvent: DarkroomScheduleWeeklyJoinMessageInternalEvent = {
     ...sourceEvent,
     ...(sourceChannelId ? { channelId: sourceChannelId } : {}),
     messageId: sourceMessageId,
   };
 
-  return [boundEvent];
+  return events.map((event) => (event === sourceEvent ? boundEvent : event));
 }
 
 function readWeeklyJoinMessageEvents(

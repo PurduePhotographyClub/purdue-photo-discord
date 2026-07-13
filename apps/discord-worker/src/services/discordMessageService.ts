@@ -7,7 +7,7 @@
 import { discordApiRequest } from '../discord/api';
 import type { DiscordEmbed, Env } from '../discord/types';
 import { getOptionalEnv } from '../utils/env';
-import { BadRequestError } from '../utils/errors';
+import { BadRequestError, DiscordApiError } from '../utils/errors';
 
 export interface SendDiscordMessageInput {
   channelId?: string | undefined;
@@ -38,8 +38,13 @@ interface DiscordChannelResponse {
 }
 
 interface DiscordMessageResponse {
+  author?: {
+    bot?: boolean;
+    id?: string;
+  };
   id?: string;
   nonce?: number | string | null;
+  webhook_id?: string;
 }
 
 export interface SendDiscordDirectMessageResult {
@@ -79,29 +84,29 @@ export async function sendDiscordMessage(
     );
   }
 
-  if (nonce) {
+  try {
+    return await discordApiRequest(env, `/channels/${channelId}/messages`, {
+      body: JSON.stringify({
+        // Prevent forwarded website or gateway text from unexpectedly pinging
+        // members, roles, or everyone in the server.
+        allowed_mentions: { parse: [] },
+        components: input.components,
+        content: input.content,
+        embeds: input.embeds,
+        ...(nonce ? { enforce_nonce: true, nonce } : {}),
+      }),
+      method: 'POST',
+    });
+  } catch (error) {
+    if (!nonce || error instanceof DiscordApiError) throw error;
     const existingMessage = await findRecentMessageByNonce(
       env,
       channelId,
       nonce,
     );
-    if (existingMessage) {
-      return existingMessage;
-    }
+    if (existingMessage) return existingMessage;
+    throw error;
   }
-
-  return discordApiRequest(env, `/channels/${channelId}/messages`, {
-    body: JSON.stringify({
-      // Prevent forwarded website or gateway text from unexpectedly pinging
-      // members, roles, or everyone in the server.
-      allowed_mentions: { parse: [] },
-      components: input.components,
-      content: input.content,
-      embeds: input.embeds,
-      ...(nonce ? { enforce_nonce: true, nonce } : {}),
-    }),
-    method: 'POST',
-  });
 }
 
 async function findRecentMessageByNonce(
@@ -116,11 +121,17 @@ async function findRecentMessageByNonce(
   if (!Array.isArray(messages)) {
     throw new Error('Discord did not return a valid recent-message list.');
   }
+  const applicationId = getOptionalEnv(env, 'DISCORD_APPLICATION_ID');
+  if (!applicationId) return null;
 
   return (
     messages.find(
       (message): message is DiscordMessageResponse =>
-        isDiscordMessageResponse(message) && String(message.nonce) === nonce,
+        isDiscordMessageResponse(message) &&
+        String(message.nonce) === nonce &&
+        message.author?.bot === true &&
+        message.author.id === applicationId &&
+        !message.webhook_id,
     ) ?? null
   );
 }
