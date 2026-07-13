@@ -22,6 +22,7 @@ const localNonceExpirations = new Map<string, number>();
 export async function authorizeGatewayRequest(
   request: Request,
   env: Env,
+  rawBody: string,
 ): Promise<void> {
   const url = new URL(request.url);
   logger.debug('Authorizing gateway request.', {
@@ -34,7 +35,7 @@ export async function authorizeGatewayRequest(
     path: `${url.pathname}${url.search}`,
   });
 
-  await verifyGatewaySignature(request, env);
+  await verifyGatewaySignature(request, env, rawBody);
   logger.info('Gateway request authorized successfully.', {
     method: request.method,
     path: `${url.pathname}${url.search}`,
@@ -44,6 +45,7 @@ export async function authorizeGatewayRequest(
 async function verifyGatewaySignature(
   request: Request,
   env: Env,
+  rawBody: string,
 ): Promise<void> {
   const secret = getWorkerSecret(env);
   if (!secret) {
@@ -65,10 +67,9 @@ async function verifyGatewaySignature(
     );
   }
 
-  const body = await request.clone().text();
   const url = new URL(request.url);
   const expectedSignature = await signGatewayRequest({
-    body,
+    body: rawBody,
     method: request.method,
     nonce,
     path: `${url.pathname}${url.search}`,
