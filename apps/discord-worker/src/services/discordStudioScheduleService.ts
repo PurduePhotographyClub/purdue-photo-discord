@@ -19,6 +19,18 @@ import {
   sendDiscordDirectMessage,
   sendDiscordMessage,
 } from './discordMessageService';
+import {
+  addManagedPrivateThreadMember,
+  assertManagedPrivateThread,
+  createManagedPrivateThread,
+  deleteDiscordManagedChannel,
+  findManagedPrivateThread,
+  getDiscordManagedChannel,
+  isDiscordPrivateThread,
+  prepareManagedPrivateThread,
+  type DiscordManagedChannel,
+  type ManagedPrivateThreadSpec,
+} from './discordPrivateThreadService';
 import { requestWebsiteApi } from './websiteApiService';
 import { BadRequestError, DiscordApiError } from '../utils/errors';
 import { getOptionalEnv, getRequiredEnv } from '../utils/env';
@@ -40,13 +52,6 @@ const PRIMARY_BUTTON = 1;
 const SUCCESS_BUTTON = 3;
 const DANGER_BUTTON = 4;
 const LINK_BUTTON = 5;
-const VIEW_CHANNEL = 1n << 10n;
-const SEND_MESSAGES = 1n << 11n;
-const ATTACH_FILES = 1n << 15n;
-const READ_MESSAGE_HISTORY = 1n << 16n;
-const CHANNEL_ACCESS = String(
-  VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES | READ_MESSAGE_HISTORY,
-);
 
 const logger = createLogger('studio-schedule');
 
@@ -65,13 +70,7 @@ const STUDIO_REQUEST_NOTE_CUSTOM_ID = 'studio_request_note';
 const STUDIO_CANCEL_REQUEST_CUSTOM_ID = 'studio_cancel_request';
 const STUDIO_REVIEW_NOTE_CUSTOM_ID = 'studio_review_note';
 
-interface DiscordChannel {
-  guild_id?: string;
-  id: string;
-  parent_id?: string | null;
-  position?: number;
-  topic?: string | null;
-}
+type DiscordChannel = DiscordManagedChannel;
 
 interface DiscordMessageResult {
   id?: string;
@@ -510,18 +509,33 @@ export async function syncStudioScheduleChannel(
   event: StudioScheduleSyncInternalEvent,
 ) {
   let syncEvent = event;
+  let legacyChannelId: string | null = null;
+  let thread: DiscordManagedChannel | null = null;
+
+  await assertStudioScheduleSyncEventCurrent(env, event, {
+    allowArchived: event.deleteChannel === true,
+  });
+
   if (event.channelId) {
-    const channelExists = await assertStudioScheduleChannelOwnership(
-      env,
-      event.channelId,
-      event,
-    );
-    if (!channelExists) {
+    const room = await resolveStudioScheduleRoom(env, event.channelId, event);
+    if (!room) {
+      syncEvent = { ...event, channelId: null, messageId: null };
+    } else if (room.kind === 'thread') {
+      thread = room.channel;
+    } else {
+      legacyChannelId = room.channel.id;
       syncEvent = { ...event, channelId: null, messageId: null };
     }
   }
 
-  if (!syncEvent.channelId) {
+  if (!thread && !syncEvent.channelId) {
+    thread = await findManagedPrivateThread(
+      env,
+      getStudioThreadSpec(syncEvent),
+    );
+  }
+
+  if (!thread && !legacyChannelId && !syncEvent.channelId) {
     const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
     const existingChannel = await findExistingStudioChannel(
       env,
@@ -529,119 +543,121 @@ export async function syncStudioScheduleChannel(
       syncEvent,
     );
     if (existingChannel) {
-      await assertStudioScheduleChannelOwnership(
+      await assertLegacyStudioScheduleChannelOwnership(
         env,
-        existingChannel.id,
+        existingChannel,
         syncEvent,
       );
-      syncEvent = { ...syncEvent, channelId: existingChannel.id };
+      legacyChannelId = existingChannel.id;
     }
   }
 
   if (syncEvent.deleteChannel === true) {
-    return deleteStudioChannel(env, syncEvent);
-  }
-
-  let channelId = syncEvent.channelId ?? null;
-  let didCreateChannel = false;
-
-  if (!channelId) {
-    if (!isActiveStudioChannel(syncEvent)) {
-      return {
-        channelId: null,
-        messageId: syncEvent.messageId ?? null,
-      };
+    await notifyRequesterOfStudioManagerUpdate(env, {
+      adminNote: syncEvent.adminNote,
+      endsAt: syncEvent.endsAt,
+      requestId: syncEvent.requestId,
+      requesterDiscordId: syncEvent.requester.discordId,
+      startsAt: syncEvent.startsAt,
+      status: syncEvent.status,
+    });
+    const channelId = thread?.id ?? legacyChannelId;
+    if (channelId) {
+      await deleteDiscordManagedChannel(env, channelId);
     }
-
-    const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
-    const channel = await createStudioChannel(env, guildId, syncEvent);
-    channelId = channel.id;
-    didCreateChannel = true;
-  }
-
-  if (!didCreateChannel) {
-    await updateStudioChannel(env, channelId, syncEvent);
-  }
-  await reconcileStudioPermissions(env, channelId, syncEvent);
-
-  const messageResult = syncEvent.messageId
-    ? await editOrSendStudioMessage(
-        env,
-        channelId,
-        syncEvent.messageId,
-        syncEvent,
-      )
-    : await sendStudioMessage(env, channelId, syncEvent);
-
-  await notifyRequesterOfStudioManagerUpdate(env, {
-    adminNote: syncEvent.adminNote,
-    endsAt: syncEvent.endsAt,
-    requestId: syncEvent.requestId,
-    requesterDiscordId: syncEvent.requester.discordId,
-    startsAt: syncEvent.startsAt,
-    status: syncEvent.status,
-  });
-
-  return {
-    channelId,
-    messageId: readMessageId(messageResult) ?? syncEvent.messageId ?? null,
-  };
-}
-
-async function deleteStudioChannel(
-  env: Env,
-  event: StudioScheduleSyncInternalEvent,
-) {
-  if (!event.channelId) {
     return {
       channelId: null,
       messageId: null,
     };
   }
 
-  try {
-    await discordApiRequest(env, `/channels/${event.channelId}`, {
-      method: 'DELETE',
-    });
-  } catch (error) {
-    if (isDiscordNotFoundError(error)) {
-      return {
-        channelId: null,
-        messageId: null,
-      };
-    }
-
-    throw error;
+  if (!isActiveStudioChannel(syncEvent)) {
+    return {
+      channelId: null,
+      messageId: null,
+    };
   }
 
-  return {
-    channelId: null,
-    messageId: null,
-  };
+  const threadSpec = getStudioThreadSpec(syncEvent);
+  let didCreateThread = false;
+  if (!thread) {
+    thread = await createManagedPrivateThread(
+      env,
+      buildStudioChannelName(syncEvent),
+      threadSpec,
+    );
+    didCreateThread = true;
+  } else {
+    thread = await prepareManagedPrivateThread(
+      env,
+      thread,
+      buildStudioChannelName(syncEvent),
+      threadSpec,
+    );
+  }
+
+  try {
+    if (didCreateThread) {
+      await assertStudioScheduleSyncEventCurrent(env, syncEvent);
+    }
+    await addManagedPrivateThreadMember(
+      env,
+      thread.id,
+      syncEvent.requester.discordId,
+    );
+    const messageResult = syncEvent.messageId
+      ? await editOrSendStudioMessage(
+          env,
+          thread.id,
+          syncEvent.messageId,
+          syncEvent,
+        )
+      : await sendStudioMessage(env, thread.id, syncEvent);
+
+    if (legacyChannelId) {
+      await deleteDiscordManagedChannel(env, legacyChannelId);
+    }
+
+    return {
+      channelId: thread.id,
+      messageId: readMessageId(messageResult) ?? syncEvent.messageId ?? null,
+    };
+  } catch (error) {
+    if (didCreateThread) {
+      try {
+        await deleteDiscordManagedChannel(env, thread.id);
+      } catch (rollbackError) {
+        logger.warn('Failed to roll back a partial studio private thread.', {
+          error: rollbackError,
+          requestId: syncEvent.requestId,
+          threadId: thread.id,
+        });
+      }
+    }
+    throw error;
+  }
 }
 
-async function createStudioChannel(
+async function assertStudioScheduleSyncEventCurrent(
   env: Env,
-  guildId: string,
   event: StudioScheduleSyncInternalEvent,
-): Promise<DiscordChannel> {
-  const channel = await discordApiRequest<DiscordChannel>(
+  options: { allowArchived?: boolean } = {},
+) {
+  const state = await requestWebsiteApi(
     env,
-    `/guilds/${guildId}/channels`,
-    {
-      body: JSON.stringify({
-        name: buildStudioChannelName(event),
-        parent_id: getStudioChannelCategoryId(event),
-        permission_overwrites: buildInitialPermissionOverwrites(guildId),
-        topic: buildStudioTopic(event),
-        type: 0,
-      }),
-      method: 'POST',
-    },
+    `/studio/requests/${encodeURIComponent(event.requestId)}/discord-sync-state`,
   );
-
-  await moveChannelBelowStudioSchedule(env, guildId, channel.id);
-  return channel;
+  if (
+    !isRecord(state) ||
+    state.status !== event.status ||
+    state.syncRevision !== event.syncRevision ||
+    (state.discordSyncStatus !== 'pending' &&
+      state.discordSyncStatus !== 'synced' &&
+      state.discordSyncStatus !== 'failed' &&
+      !(options.allowArchived && state.discordSyncStatus === 'archived'))
+  ) {
+    throw new BadRequestError('Studio Discord sync event is stale.');
+  }
 }
 
 async function findExistingStudioChannel(
@@ -657,6 +673,7 @@ async function findExistingStudioChannel(
   return (
     channels.find(
       (channel) =>
+        (channel.type === 0 || channel.type === undefined) &&
         channel.topic?.split(' | ').at(-1)?.startsWith(markerPrefix) === true &&
         (channel.parent_id === STUDIO_SCHEDULE_CATEGORY_ID ||
           channel.parent_id === STUDIO_RESOLVED_CATEGORY_ID),
@@ -664,28 +681,40 @@ async function findExistingStudioChannel(
   );
 }
 
-async function assertStudioScheduleChannelOwnership(
+async function resolveStudioScheduleRoom(
   env: Env,
   channelId: string,
   event: StudioScheduleSyncInternalEvent,
 ) {
-  let channel: DiscordChannel;
-  try {
-    channel = await discordApiRequest<DiscordChannel>(
-      env,
-      `/channels/${channelId}`,
-    );
-  } catch (error) {
-    if (isDiscordNotFoundError(error)) return false;
-    throw error;
+  const channel = await getDiscordManagedChannel(env, channelId);
+  if (!channel) {
+    return null;
+  }
+  if (isDiscordPrivateThread(channel)) {
+    assertManagedPrivateThread(env, channel, getStudioThreadSpec(event));
+    return { channel, kind: 'thread' as const };
   }
 
+  await assertLegacyStudioScheduleChannelOwnership(env, channel, event);
+  return { channel, kind: 'legacy' as const };
+}
+
+async function assertLegacyStudioScheduleChannelOwnership(
+  env: Env,
+  channel: DiscordChannel,
+  event: StudioScheduleSyncInternalEvent,
+) {
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
   const isAllowedCategory =
     channel.parent_id === STUDIO_SCHEDULE_CATEGORY_ID ||
     channel.parent_id === STUDIO_RESOLVED_CATEGORY_ID;
   const markerPrefix = `${buildStudioTopicOwnershipMarker(event)};REV=`;
-  if (channel.guild_id !== guildId || !isAllowedCategory || !channel.topic) {
+  if (
+    channel.guild_id !== guildId ||
+    (channel.type !== 0 && channel.type !== undefined) ||
+    !isAllowedCategory ||
+    !channel.topic
+  ) {
     throw new BadRequestError('Studio schedule channel ownership mismatch.');
   }
 
@@ -706,120 +735,10 @@ async function assertStudioScheduleChannelOwnership(
     throw new BadRequestError('Studio schedule channel marker mismatch.');
   }
 
-  await discordApiRequest(env, `/channels/${channelId}`, {
+  await discordApiRequest(env, `/channels/${channel.id}`, {
     body: JSON.stringify({ topic: buildStudioTopic(event) }),
     method: 'PATCH',
   });
-  return true;
-}
-
-async function updateStudioChannel(
-  env: Env,
-  channelId: string,
-  event: StudioScheduleSyncInternalEvent,
-) {
-  await discordApiRequest(env, `/channels/${channelId}`, {
-    body: JSON.stringify({
-      name: buildStudioChannelName(event),
-      parent_id: getStudioChannelCategoryId(event),
-      topic: buildStudioTopic(event),
-    }),
-    method: 'PATCH',
-  });
-}
-
-async function moveChannelBelowStudioSchedule(
-  env: Env,
-  guildId: string,
-  channelId: string,
-) {
-  try {
-    const channels = await discordApiRequest<DiscordChannel[]>(
-      env,
-      `/guilds/${guildId}/channels`,
-    );
-    const anchor = channels.find(
-      (channel) => channel.id === STUDIO_SCHEDULE_CHANNEL_ID,
-    );
-    if (anchor?.position === undefined) {
-      return;
-    }
-
-    await discordApiRequest(env, `/guilds/${guildId}/channels`, {
-      body: JSON.stringify([
-        {
-          id: channelId,
-          parent_id: STUDIO_SCHEDULE_CATEGORY_ID,
-          position: anchor.position + 1,
-        },
-      ]),
-      method: 'PATCH',
-    });
-  } catch (error) {
-    logger.warn('Failed to position studio schedule channel below anchor.', {
-      channelId,
-      error,
-    });
-  }
-}
-
-async function reconcileStudioPermissions(
-  env: Env,
-  channelId: string,
-  event: StudioScheduleSyncInternalEvent,
-) {
-  const discordIdsToRemove = [
-    event.removeDiscordId,
-    ...(!isActiveStudioChannel(event) ? [event.requester.discordId] : []),
-  ].filter((discordId): discordId is string => !!discordId);
-
-  await Promise.all([
-    ...(isActiveStudioChannel(event)
-      ? [allowMemberInStudioChannel(env, channelId, event.requester.discordId)]
-      : []),
-    ...unique(discordIdsToRemove).map((discordId) =>
-      removeMemberFromStudioChannel(env, channelId, discordId),
-    ),
-  ]);
-}
-
-async function allowMemberInStudioChannel(
-  env: Env,
-  channelId: string,
-  discordId: string,
-) {
-  await discordApiRequest(
-    env,
-    `/channels/${channelId}/permissions/${discordId}`,
-    {
-      body: JSON.stringify({
-        allow: CHANNEL_ACCESS,
-        deny: '0',
-        type: 1,
-      }),
-      method: 'PUT',
-    },
-  );
-}
-
-async function removeMemberFromStudioChannel(
-  env: Env,
-  channelId: string,
-  discordId: string,
-) {
-  try {
-    await discordApiRequest(
-      env,
-      `/channels/${channelId}/permissions/${discordId}`,
-      { method: 'DELETE' },
-    );
-  } catch (error) {
-    if (isDiscordNotFoundError(error)) {
-      return;
-    }
-
-    throw error;
-  }
 }
 
 async function sendStudioMessage(
@@ -878,25 +797,6 @@ async function editOrSendStudioMessage(
 
     throw error;
   }
-}
-
-function buildInitialPermissionOverwrites(guildId: string) {
-  return [
-    {
-      allow: '0',
-      deny: String(VIEW_CHANNEL),
-      id: guildId,
-      type: 0,
-    },
-    ...unique([DISCORD_ROLE_IDS.admin, DISCORD_ROLE_IDS.executive]).map(
-      (roleId) => ({
-        allow: CHANNEL_ACCESS,
-        deny: '0',
-        id: roleId,
-        type: 0,
-      }),
-    ),
-  ];
 }
 
 function createStudioScheduleMessagePayload(env: Env) {
@@ -1193,7 +1093,7 @@ function buildStudioSessionContent(event: StudioScheduleSyncInternalEvent) {
     return 'This studio reservation has ended.';
   }
 
-  return 'Studio reservation coordination channel. Use this space for access, setup, cleanup, and handoff details.';
+  return 'Studio reservation coordination thread. Use this space for access, setup, cleanup, and handoff details.';
 }
 
 function buildStudioSessionEmbed(event: StudioScheduleSyncInternalEvent) {
@@ -1318,6 +1218,16 @@ function buildStudioChannelName(event: StudioScheduleSyncInternalEvent) {
   );
 }
 
+function getStudioThreadSpec(
+  event: StudioScheduleSyncInternalEvent,
+): ManagedPrivateThreadSpec {
+  return {
+    marker: `--pcc-studio-${event.requestId}`,
+    parentChannelId: STUDIO_SCHEDULE_CHANNEL_ID,
+    syncRevision: event.syncRevision,
+  };
+}
+
 function buildStudioTopic(event: StudioScheduleSyncInternalEvent) {
   const marker = buildStudioTopicMarker(event);
   const details = [
@@ -1340,12 +1250,6 @@ function buildStudioTopicOwnershipMarker(
 
 function isActiveStudioChannel(event: StudioScheduleSyncInternalEvent) {
   return event.status === 'approved' && !isPastStudioReservation(event);
-}
-
-function getStudioChannelCategoryId(event: StudioScheduleSyncInternalEvent) {
-  return isActiveStudioChannel(event)
-    ? STUDIO_SCHEDULE_CATEGORY_ID
-    : STUDIO_RESOLVED_CATEGORY_ID;
 }
 
 function isPastStudioReservation(event: StudioScheduleSyncInternalEvent) {
@@ -1651,10 +1555,6 @@ function truncate(value: string, maxLength: number) {
   }
 
   return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
-}
-
-function unique(values: string[]) {
-  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -181,39 +181,32 @@ test('schedule root messages use deterministic Discord nonces', async () => {
   assert.match(studio, /nonce:\s*buildStudioReviewMessageNonce/);
 });
 
-test('schedule channels are verified by guild, category, and ownership marker', async () => {
-  const [darkroom, studio] = await Promise.all([
+test('schedule threads verify guild, parent, type, owner, marker, and revision', async () => {
+  const [darkroom, equipment, privateThreads, studio] = await Promise.all([
     readSource('./discordDarkroomScheduleService.ts'),
+    readSource('./discordEquipmentLoanService.ts'),
+    readSource('./discordPrivateThreadService.ts'),
     readSource('./discordStudioScheduleService.ts'),
   ]);
 
-  assert.match(darkroom, /assertDarkroomScheduleChannelOwnership/);
-  assert.match(darkroom, /channel\.guild_id !== guildId/);
+  assert.match(privateThreads, /channel\.guild_id !== guildId/);
+  assert.match(privateThreads, /channel\.owner_id !== applicationId/);
+  assert.match(privateThreads, /channel\.parent_id !== spec\.parentChannelId/);
+  assert.match(privateThreads, /channel\.type !== DISCORD_PRIVATE_THREAD_TYPE/);
+  assert.match(privateThreads, /storedRevision > spec\.syncRevision/);
+  assert.match(privateThreads, /invitable:\s*false/);
+  assert.match(privateThreads, /type:\s*DISCORD_PRIVATE_THREAD_TYPE/);
+  assert.match(darkroom, /assertLegacyDarkroomScheduleChannelOwnership/);
+  assert.match(studio, /assertLegacyStudioScheduleChannelOwnership/);
+  assert.match(darkroom, /marker:\s*`--pcc-darkroom-\$\{event\.slotId\}`/);
+  assert.match(equipment, /marker:\s*`--pcc-equipment-\$\{event\.loanId\}`/);
+  assert.match(equipment, /syncRevision:\s*event\.syncRevision/);
+  assert.match(studio, /marker:\s*`--pcc-studio-\$\{event\.requestId\}`/);
   assert.match(
     darkroom,
-    /split\('\s*\|\s*'\)\.at\(-1\)\?\.startsWith\(markerPrefix\)/,
+    /parentChannelId:\s*DARKROOM_SCHEDULE_JOIN_CHANNEL_ID/,
   );
-  assert.match(studio, /assertStudioScheduleChannelOwnership/);
-  assert.match(studio, /channel\.guild_id !== guildId/);
-  assert.match(
-    studio,
-    /split\('\s*\|\s*'\)\.at\(-1\)\?\.startsWith\(markerPrefix\)/,
-  );
-  assert.doesNotMatch(darkroom, /isExplicitLegacyAdoption/);
-  assert.match(darkroom, /status === 404\) return false/);
-  assert.match(studio, /isDiscordNotFoundError\(error\)\) return false/);
-  assert.match(darkroom, /1_024 - marker\.length - 3/);
-  assert.match(studio, /1_024 - marker\.length - 3/);
-  assert.match(darkroom, /storedRevision > event\.syncRevision/);
-  assert.match(studio, /storedRevision > event\.syncRevision/);
-  assert.match(
-    darkroom,
-    /existingChannel[\s\S]*assertDarkroomScheduleChannelOwnership/,
-  );
-  assert.match(
-    studio,
-    /existingChannel[\s\S]*assertStudioScheduleChannelOwnership/,
-  );
+  assert.match(studio, /parentChannelId:\s*STUDIO_SCHEDULE_CHANNEL_ID/);
 });
 
 test('darkroom interaction synchronization settles channel and weekly work independently', async () => {
@@ -223,9 +216,10 @@ test('darkroom interaction synchronization settles channel and weekly work indep
   assert.match(source, /Promise\.allSettled/);
   assert.match(source, /weeklyJoinMessageEvents/);
   assert.match(source, /weekly refresh is missing its message ID/);
+  assert.match(source, /deleted:\s*event\.deleteChannel === true/);
 });
 
-test('darkroom permission and notification fan-out uses bounded concurrency', async () => {
+test('darkroom membership and notification fan-out uses bounded concurrency', async () => {
   const source = await readSource('./discordDarkroomScheduleService.ts');
 
   assert.match(source, /DARKROOM_DISCORD_MUTATION_CONCURRENCY\s*=\s*2/);
@@ -234,15 +228,17 @@ test('darkroom permission and notification fan-out uses bounded concurrency', as
 });
 
 test('stale weekly messages are reported and existing schedule markers advance', async () => {
-  const [dispatcher, darkroom, studio] = await Promise.all([
+  const [dispatcher, darkroom, privateThreads, studio] = await Promise.all([
     readSource('../internal-events/dispatcher.ts'),
     readSource('./discordDarkroomScheduleService.ts'),
+    readSource('./discordPrivateThreadService.ts'),
     readSource('./discordStudioScheduleService.ts'),
   ]);
 
   assert.match(darkroom, /stale:\s*result === null/);
   assert.match(dispatcher, /ok:\s*result\.ok/);
-  assert.match(studio, /if \(!didCreateChannel\)/);
+  assert.match(studio, /prepareManagedPrivateThread/);
+  assert.match(privateThreads, /storedRevision > spec\.syncRevision/);
 });
 
 test('Discord retry-after values are treated as seconds without a millisecond heuristic', async () => {

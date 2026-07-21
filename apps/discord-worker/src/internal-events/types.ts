@@ -184,6 +184,7 @@ export interface EquipmentLoanSyncInternalEvent {
   requestedAt: string;
   returnedAt?: string | null;
   status: 'active' | 'pending' | 'pending_return' | 'rejected' | 'returned';
+  syncRevision: number;
   termsSnapshot?: string | null;
   type: 'website.equipment.loan.sync';
   updateChannel?: boolean;

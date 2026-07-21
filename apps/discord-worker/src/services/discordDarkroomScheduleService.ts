@@ -21,22 +21,27 @@ import {
   sendDiscordDirectMessage,
   sendDiscordMessage,
 } from './discordMessageService';
+import {
+  addManagedPrivateThreadMember,
+  assertManagedPrivateThread,
+  createManagedPrivateThread,
+  deleteDiscordManagedChannel,
+  findManagedPrivateThread,
+  getDiscordManagedChannel,
+  isDiscordPrivateThread,
+  prepareManagedPrivateThread,
+  removeManagedPrivateThreadMember,
+  type DiscordManagedChannel,
+  type ManagedPrivateThreadSpec,
+} from './discordPrivateThreadService';
 
 const DARKROOM_SCHEDULE_CATEGORY_ID = '1512506913043124436';
 const DARKROOM_SCHEDULE_ARCHIVE_CATEGORY_ID = '1512863825735585943';
-const DARKROOM_SCHEDULE_ANCHOR_CHANNEL_ID = '1512554500853072062';
 const ACTION_ROW = 1;
 const BUTTON = 2;
 const STRING_SELECT = 3;
 const DANGER_BUTTON = 4;
 const LINK_BUTTON = 5;
-const VIEW_CHANNEL = 1n << 10n;
-const SEND_MESSAGES = 1n << 11n;
-const ATTACH_FILES = 1n << 15n;
-const READ_MESSAGE_HISTORY = 1n << 16n;
-const CHANNEL_ACCESS = String(
-  VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES | READ_MESSAGE_HISTORY,
-);
 
 export const DARKROOM_SCHEDULE_DROP_CUSTOM_ID_PREFIX =
   'darkroom_schedule_drop:';
@@ -45,13 +50,7 @@ const DARKROOM_SCHEDULE_JOIN_CHANNEL_ID = '1512900016979837161';
 
 const logger = createLogger('darkroom-schedule');
 
-interface DiscordChannel {
-  guild_id?: string;
-  id: string;
-  parent_id?: string | null;
-  position?: number;
-  topic?: string | null;
-}
+type DiscordChannel = DiscordManagedChannel;
 
 interface DiscordMessageResult {
   id?: string;
@@ -208,8 +207,8 @@ export async function handleDarkroomScheduleSessionActionButton(
     appendDarkroomSyncWarning(
       actionResponse.message ??
         (action === 'cancel'
-          ? 'Darkroom session cancelled and archived.'
-          : 'Darkroom session ended and archived.'),
+          ? 'Darkroom session cancelled and its private thread was deleted.'
+          : 'Darkroom session ended and its private thread was deleted.'),
       syncWarning,
     ),
   );
@@ -262,18 +261,33 @@ export async function syncDarkroomScheduleChannel(
   event: DarkroomScheduleSyncInternalEvent,
 ) {
   let syncEvent = event;
+  let legacyChannelId: string | null = null;
+  let thread: DiscordManagedChannel | null = null;
+
+  await assertDarkroomScheduleSyncEventCurrent(env, event, {
+    allowArchived: shouldDeleteScheduleRoom(event),
+  });
+
   if (event.channelId) {
-    const channelExists = await assertDarkroomScheduleChannelOwnership(
-      env,
-      event.channelId,
-      event,
-    );
-    if (!channelExists) {
+    const room = await resolveDarkroomScheduleRoom(env, event.channelId, event);
+    if (!room) {
+      syncEvent = { ...event, channelId: null, messageId: null };
+    } else if (room.kind === 'thread') {
+      thread = room.channel;
+    } else {
+      legacyChannelId = room.channel.id;
       syncEvent = { ...event, channelId: null, messageId: null };
     }
   }
 
-  if (!syncEvent.channelId) {
+  if (!thread && !syncEvent.channelId) {
+    thread = await findManagedPrivateThread(
+      env,
+      getDarkroomThreadSpec(syncEvent),
+    );
+  }
+
+  if (!thread && !legacyChannelId && !syncEvent.channelId) {
     const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
     const existingChannel = await findExistingScheduleChannel(
       env,
@@ -281,150 +295,103 @@ export async function syncDarkroomScheduleChannel(
       syncEvent,
     );
     if (existingChannel) {
-      await assertDarkroomScheduleChannelOwnership(
+      await assertLegacyDarkroomScheduleChannelOwnership(
         env,
-        existingChannel.id,
+        existingChannel,
         syncEvent,
       );
-      syncEvent = { ...syncEvent, channelId: existingChannel.id };
+      legacyChannelId = existingChannel.id;
     }
   }
 
-  if (syncEvent.deleteChannel === true) {
-    return deleteScheduleChannel(env, syncEvent);
-  }
-
-  if (shouldArchiveScheduleChannel(syncEvent)) {
-    return archiveScheduleChannel(env, syncEvent);
-  }
-
-  let channelId = syncEvent.channelId ?? null;
-  let didCreateChannel = false;
-
-  if (!channelId) {
-    const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
-    const channel = await createScheduleChannel(env, guildId, syncEvent);
-    channelId = channel.id;
-    didCreateChannel = true;
-  }
-
-  if (!didCreateChannel) {
-    await updateScheduleChannel(
-      env,
-      channelId,
-      syncEvent,
-      DARKROOM_SCHEDULE_CATEGORY_ID,
-    );
-  }
-  await reconcileSchedulePermissions(env, channelId, syncEvent);
-
-  const messageResult = syncEvent.messageId
-    ? await editOrSendScheduleMessage(
-        env,
-        channelId,
-        syncEvent.messageId,
-        syncEvent,
-      )
-    : await sendScheduleMessage(env, channelId, syncEvent);
-
-  return {
-    channelId,
-    messageId: readMessageId(messageResult) ?? syncEvent.messageId ?? null,
-  };
-}
-
-async function deleteScheduleChannel(
-  env: Env,
-  event: DarkroomScheduleSyncInternalEvent,
-) {
-  if (!event.channelId) {
+  if (shouldDeleteScheduleRoom(syncEvent)) {
+    await notifyDarkroomRegistrantsOfScheduleAction(env, syncEvent);
+    const channelId = thread?.id ?? legacyChannelId;
+    if (channelId) {
+      await deleteDiscordManagedChannel(env, channelId);
+    }
     return {
       channelId: null,
       messageId: null,
     };
   }
 
+  const threadSpec = getDarkroomThreadSpec(syncEvent);
+  let didCreateThread = false;
+  if (!thread) {
+    thread = await createManagedPrivateThread(
+      env,
+      buildScheduleChannelName(syncEvent),
+      threadSpec,
+    );
+    didCreateThread = true;
+  } else {
+    thread = await prepareManagedPrivateThread(
+      env,
+      thread,
+      buildScheduleChannelName(syncEvent),
+      threadSpec,
+    );
+  }
+
   try {
-    await discordApiRequest(env, `/channels/${event.channelId}`, {
-      method: 'DELETE',
-    });
-  } catch (error) {
-    if (error instanceof DiscordApiError && error.status === 404) {
-      return {
-        channelId: null,
-        messageId: null,
-      };
+    if (didCreateThread) {
+      await assertDarkroomScheduleSyncEventCurrent(env, syncEvent);
+    }
+    await reconcileScheduleThreadMembers(env, thread.id, syncEvent);
+    const messageResult = syncEvent.messageId
+      ? await editOrSendScheduleMessage(
+          env,
+          thread.id,
+          syncEvent.messageId,
+          syncEvent,
+        )
+      : await sendScheduleMessage(env, thread.id, syncEvent);
+
+    if (legacyChannelId) {
+      await deleteDiscordManagedChannel(env, legacyChannelId);
     }
 
+    return {
+      channelId: thread.id,
+      messageId: readMessageId(messageResult) ?? syncEvent.messageId ?? null,
+    };
+  } catch (error) {
+    if (didCreateThread) {
+      try {
+        await deleteDiscordManagedChannel(env, thread.id);
+      } catch (rollbackError) {
+        logger.warn('Failed to roll back a partial darkroom private thread.', {
+          error: rollbackError,
+          slotId: syncEvent.slotId,
+          threadId: thread.id,
+        });
+      }
+    }
     throw error;
   }
-
-  return {
-    channelId: null,
-    messageId: null,
-  };
 }
 
-async function archiveScheduleChannel(
+async function assertDarkroomScheduleSyncEventCurrent(
   env: Env,
   event: DarkroomScheduleSyncInternalEvent,
+  options: { allowArchived?: boolean } = {},
 ) {
-  if (!event.channelId) {
-    await notifyDarkroomRegistrantsOfScheduleAction(env, event);
-
-    return {
-      channelId: null,
-      messageId: event.messageId ?? null,
-    };
+  const state = await requestWebsiteApi(
+    env,
+    `/darkroom/schedule/${encodeURIComponent(event.slotId)}/discord-sync-state`,
+  );
+  if (
+    !isRecord(state) ||
+    state.status !== event.status ||
+    state.syncRevision !== event.syncRevision ||
+    (state.discordSyncStatus !== 'pending' &&
+      state.discordSyncStatus !== 'synced' &&
+      state.discordSyncStatus !== 'failed' &&
+      !(options.allowArchived && state.discordSyncStatus === 'archived'))
+  ) {
+    throw new BadRequestError('Darkroom Discord sync event is stale.');
   }
-
-  await updateScheduleChannel(
-    env,
-    event.channelId,
-    event,
-    DARKROOM_SCHEDULE_ARCHIVE_CATEGORY_ID,
-  );
-  await reconcileSchedulePermissions(env, event.channelId, event);
-
-  const messageResult = event.messageId
-    ? await editOrSendScheduleMessage(
-        env,
-        event.channelId,
-        event.messageId,
-        event,
-      )
-    : await sendScheduleMessage(env, event.channelId, event);
-
-  await notifyDarkroomRegistrantsOfScheduleAction(env, event);
-
-  return {
-    channelId: event.channelId,
-    messageId: readMessageId(messageResult) ?? event.messageId ?? null,
-  };
-}
-
-async function createScheduleChannel(
-  env: Env,
-  guildId: string,
-  event: DarkroomScheduleSyncInternalEvent,
-): Promise<DiscordChannel> {
-  const channel = await discordApiRequest<DiscordChannel>(
-    env,
-    `/guilds/${guildId}/channels`,
-    {
-      body: JSON.stringify({
-        name: buildScheduleChannelName(event),
-        parent_id: DARKROOM_SCHEDULE_CATEGORY_ID,
-        permission_overwrites: buildInitialPermissionOverwrites(guildId),
-        topic: buildScheduleTopic(event),
-        type: 0,
-      }),
-      method: 'POST',
-    },
-  );
-
-  await moveChannelBelowAnchor(env, guildId, channel.id);
-  return channel;
 }
 
 async function findExistingScheduleChannel(
@@ -440,6 +407,7 @@ async function findExistingScheduleChannel(
   return (
     channels.find(
       (channel) =>
+        (channel.type === 0 || channel.type === undefined) &&
         channel.topic?.split(' | ').at(-1)?.startsWith(markerPrefix) === true &&
         (channel.parent_id === DARKROOM_SCHEDULE_CATEGORY_ID ||
           channel.parent_id === DARKROOM_SCHEDULE_ARCHIVE_CATEGORY_ID),
@@ -447,28 +415,40 @@ async function findExistingScheduleChannel(
   );
 }
 
-async function assertDarkroomScheduleChannelOwnership(
+async function resolveDarkroomScheduleRoom(
   env: Env,
   channelId: string,
   event: DarkroomScheduleSyncInternalEvent,
 ) {
-  let channel: DiscordChannel;
-  try {
-    channel = await discordApiRequest<DiscordChannel>(
-      env,
-      `/channels/${channelId}`,
-    );
-  } catch (error) {
-    if (error instanceof DiscordApiError && error.status === 404) return false;
-    throw error;
+  const channel = await getDiscordManagedChannel(env, channelId);
+  if (!channel) {
+    return null;
+  }
+  if (isDiscordPrivateThread(channel)) {
+    assertManagedPrivateThread(env, channel, getDarkroomThreadSpec(event));
+    return { channel, kind: 'thread' as const };
   }
 
+  await assertLegacyDarkroomScheduleChannelOwnership(env, channel, event);
+  return { channel, kind: 'legacy' as const };
+}
+
+async function assertLegacyDarkroomScheduleChannelOwnership(
+  env: Env,
+  channel: DiscordChannel,
+  event: DarkroomScheduleSyncInternalEvent,
+) {
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
   const isAllowedCategory =
     channel.parent_id === DARKROOM_SCHEDULE_CATEGORY_ID ||
     channel.parent_id === DARKROOM_SCHEDULE_ARCHIVE_CATEGORY_ID;
   const markerPrefix = `${buildScheduleTopicOwnershipMarker(event)};REV=`;
-  if (channel.guild_id !== guildId || !isAllowedCategory || !channel.topic) {
+  if (
+    channel.guild_id !== guildId ||
+    (channel.type !== 0 && channel.type !== undefined) ||
+    !isAllowedCategory ||
+    !channel.topic
+  ) {
     throw new BadRequestError('Darkroom schedule channel ownership mismatch.');
   }
 
@@ -489,67 +469,15 @@ async function assertDarkroomScheduleChannelOwnership(
     throw new BadRequestError('Darkroom schedule channel marker mismatch.');
   }
 
-  await discordApiRequest(env, `/channels/${channelId}`, {
+  await discordApiRequest(env, `/channels/${channel.id}`, {
     body: JSON.stringify({ topic: buildScheduleTopic(event) }),
     method: 'PATCH',
   });
-  return true;
 }
 
-async function updateScheduleChannel(
+async function reconcileScheduleThreadMembers(
   env: Env,
-  channelId: string,
-  event: DarkroomScheduleSyncInternalEvent,
-  parentId: string,
-) {
-  await discordApiRequest(env, `/channels/${channelId}`, {
-    body: JSON.stringify({
-      name: buildScheduleChannelName(event),
-      parent_id: parentId,
-      topic: buildScheduleTopic(event),
-    }),
-    method: 'PATCH',
-  });
-}
-
-async function moveChannelBelowAnchor(
-  env: Env,
-  guildId: string,
-  channelId: string,
-) {
-  try {
-    const channels = await discordApiRequest<DiscordChannel[]>(
-      env,
-      `/guilds/${guildId}/channels`,
-    );
-    const anchor = channels.find(
-      (channel) => channel.id === DARKROOM_SCHEDULE_ANCHOR_CHANNEL_ID,
-    );
-    if (anchor?.position === undefined) {
-      return;
-    }
-
-    await discordApiRequest(env, `/guilds/${guildId}/channels`, {
-      body: JSON.stringify([
-        {
-          id: channelId,
-          parent_id: DARKROOM_SCHEDULE_CATEGORY_ID,
-          position: anchor.position + 1,
-        },
-      ]),
-      method: 'PATCH',
-    });
-  } catch (error) {
-    logger.warn('Failed to position darkroom schedule channel below anchor.', {
-      channelId,
-      error,
-    });
-  }
-}
-
-async function reconcileSchedulePermissions(
-  env: Env,
-  channelId: string,
+  threadId: string,
   event: DarkroomScheduleSyncInternalEvent,
 ) {
   const activeDiscordIds = new Set(
@@ -580,48 +508,9 @@ async function reconcileSchedulePermissions(
     DARKROOM_DISCORD_MUTATION_CONCURRENCY,
     (change) =>
       change.action === 'allow'
-        ? allowMemberInScheduleChannel(env, channelId, change.discordId)
-        : removeMemberFromScheduleChannel(env, channelId, change.discordId),
+        ? addManagedPrivateThreadMember(env, threadId, change.discordId)
+        : removeManagedPrivateThreadMember(env, threadId, change.discordId),
   );
-}
-
-async function allowMemberInScheduleChannel(
-  env: Env,
-  channelId: string,
-  discordId: string,
-) {
-  await discordApiRequest(
-    env,
-    `/channels/${channelId}/permissions/${discordId}`,
-    {
-      body: JSON.stringify({
-        allow: CHANNEL_ACCESS,
-        deny: '0',
-        type: 1,
-      }),
-      method: 'PUT',
-    },
-  );
-}
-
-async function removeMemberFromScheduleChannel(
-  env: Env,
-  channelId: string,
-  discordId: string,
-) {
-  try {
-    await discordApiRequest(
-      env,
-      `/channels/${channelId}/permissions/${discordId}`,
-      { method: 'DELETE' },
-    );
-  } catch (error) {
-    if (error instanceof DiscordApiError && error.status === 404) {
-      return;
-    }
-
-    throw error;
-  }
 }
 
 async function sendScheduleMessage(
@@ -751,25 +640,6 @@ function buildDarkroomWeeklyMessageNonce(
   event: DarkroomScheduleWeeklyJoinMessageInternalEvent,
 ) {
   return `dr-week-${Math.floor(Date.parse(event.windowStart) / 1_000).toString(36)}`;
-}
-
-function buildInitialPermissionOverwrites(guildId: string) {
-  return [
-    {
-      allow: '0',
-      deny: String(VIEW_CHANNEL),
-      id: guildId,
-      type: 0,
-    },
-    ...unique([DISCORD_ROLE_IDS.admin, DISCORD_ROLE_IDS.executive]).map(
-      (roleId) => ({
-        allow: CHANNEL_ACCESS,
-        deny: '0',
-        id: roleId,
-        type: 0,
-      }),
-    ),
-  ];
 }
 
 function buildScheduleComponents(
@@ -915,14 +785,14 @@ function formatWeeklyJoinSlotList(slots: DarkroomScheduleWeeklyJoinSlot[]) {
 
 function buildScheduleContent(event: DarkroomScheduleSyncInternalEvent) {
   if (event.status === 'cancelled') {
-    return 'This darkroom timeslot has been cancelled and archived. The website calendar is the source of truth.';
+    return 'This darkroom timeslot was cancelled and its private thread was deleted. The website calendar is the source of truth.';
   }
 
   if (isPastScheduleDeadline(event)) {
-    return 'This darkroom timeslot has ended and the channel has been archived.';
+    return 'This darkroom timeslot ended and its private thread was deleted.';
   }
 
-  return 'Darkroom timeslot coordination channel. Use the button below if you need to drop your spot.';
+  return 'Darkroom timeslot coordination thread. Use the button below if you need to drop your spot.';
 }
 
 function buildScheduleEmbed(event: DarkroomScheduleSyncInternalEvent) {
@@ -1077,6 +947,16 @@ function buildScheduleChannelName(event: DarkroomScheduleSyncInternalEvent) {
   );
 }
 
+function getDarkroomThreadSpec(
+  event: DarkroomScheduleSyncInternalEvent,
+): ManagedPrivateThreadSpec {
+  return {
+    marker: `--pcc-darkroom-${event.slotId}`,
+    parentChannelId: DARKROOM_SCHEDULE_JOIN_CHANNEL_ID,
+    syncRevision: event.syncRevision,
+  };
+}
+
 function buildScheduleTopic(event: DarkroomScheduleSyncInternalEvent) {
   const marker = buildScheduleTopicMarker(event);
   const details = [
@@ -1099,14 +979,16 @@ function buildScheduleTopicOwnershipMarker(
   return `PCC_DARKROOM_SLOT=${event.slotId}`;
 }
 
-function shouldArchiveScheduleChannel(
-  event: DarkroomScheduleSyncInternalEvent,
-) {
-  return event.status === 'cancelled' || isPastScheduleDeadline(event);
+function shouldDeleteScheduleRoom(event: DarkroomScheduleSyncInternalEvent) {
+  return (
+    event.deleteChannel === true ||
+    event.status === 'cancelled' ||
+    isPastScheduleDeadline(event)
+  );
 }
 
 function isActiveScheduleChannel(event: DarkroomScheduleSyncInternalEvent) {
-  return !shouldArchiveScheduleChannel(event);
+  return !shouldDeleteScheduleRoom(event);
 }
 
 function isPastScheduleDeadline(event: DarkroomScheduleSyncInternalEvent) {
@@ -1115,11 +997,11 @@ function isPastScheduleDeadline(event: DarkroomScheduleSyncInternalEvent) {
 
 function getScheduleDescription(event: DarkroomScheduleSyncInternalEvent) {
   if (event.status === 'cancelled') {
-    return 'Cancelled slots are moved into the darkroom archive category.';
+    return 'Cancelled slots are closed and their private threads are deleted.';
   }
 
   if (isPastScheduleDeadline(event)) {
-    return 'Past slots are moved into the darkroom archive category.';
+    return 'Past slots are closed and their private threads are deleted.';
   }
 
   return null;
@@ -1138,7 +1020,7 @@ function getScheduleTitlePrefix(event: DarkroomScheduleSyncInternalEvent) {
     return 'Cancelled: ';
   }
 
-  return isPastScheduleDeadline(event) ? 'Archived: ' : '';
+  return isPastScheduleDeadline(event) ? 'Ended: ' : '';
 }
 
 function getScheduleChannelPrefix(event: DarkroomScheduleSyncInternalEvent) {
@@ -1151,10 +1033,10 @@ function getScheduleChannelPrefix(event: DarkroomScheduleSyncInternalEvent) {
 
 function getScheduleTopicStatus(event: DarkroomScheduleSyncInternalEvent) {
   if (event.status === 'cancelled') {
-    return 'Cancelled and archived';
+    return 'Cancelled';
   }
 
-  return isPastScheduleDeadline(event) ? 'Ended and archived' : 'Active';
+  return isPastScheduleDeadline(event) ? 'Ended' : 'Active';
 }
 
 function readDiscordScheduleDropResponse(
@@ -1300,6 +1182,7 @@ async function syncDarkroomScheduleAndPersist(
     {
       body: {
         channelId: result.channelId,
+        deleted: event.deleteChannel === true,
         messageId: result.messageId,
         syncRevision: event.syncRevision,
       },

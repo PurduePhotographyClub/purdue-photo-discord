@@ -1,5 +1,3 @@
-import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
-import { discordApiRequest } from '../discord/api';
 import { ephemeralResponse } from '../discord/responses';
 import type {
   ComponentInteraction,
@@ -9,17 +7,30 @@ import type {
 } from '../discord/types';
 import type { EquipmentLoanSyncInternalEvent } from '../internal-events/types';
 import { getOptionalEnv, getRequiredEnv } from '../utils/env';
-import { DiscordApiError } from '../utils/errors';
+import { BadRequestError, DiscordApiError } from '../utils/errors';
 import { createLogger } from '../utils/logger';
 import {
   editDiscordMessage,
   sendDiscordDirectMessage,
   sendDiscordMessage,
 } from './discordMessageService';
+import {
+  addManagedPrivateThreadMember,
+  assertManagedPrivateThread,
+  createManagedPrivateThread,
+  deleteDiscordManagedChannel,
+  findManagedPrivateThread,
+  getDiscordManagedChannel,
+  isDiscordPrivateThread,
+  prepareManagedPrivateThread,
+  type DiscordManagedChannel,
+  type ManagedPrivateThreadSpec,
+} from './discordPrivateThreadService';
 import { requestWebsiteApi } from './websiteApiService';
 
 const EQUIPMENT_LOAN_CATEGORY_ID = '1512504813005574164';
 const EQUIPMENT_LOAN_ARCHIVE_CATEGORY_ID = '1512863825735585943';
+const EQUIPMENT_LOAN_REQUESTS_CHANNEL_ID = '1517861087947657389';
 const EQUIPMENT_TERMS_CHANNEL_ID = '1512505024792760421';
 const ACTION_ROW = 1;
 const BUTTON = 2;
@@ -28,13 +39,6 @@ const SUCCESS_BUTTON = 3;
 const SECONDARY_BUTTON = 2;
 const DANGER_BUTTON = 4;
 const LINK_BUTTON = 5;
-const VIEW_CHANNEL = 1n << 10n;
-const SEND_MESSAGES = 1n << 11n;
-const ATTACH_FILES = 1n << 15n;
-const READ_MESSAGE_HISTORY = 1n << 16n;
-const CHANNEL_ACCESS = String(
-  VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES | READ_MESSAGE_HISTORY,
-);
 
 const logger = createLogger('equipment-loans');
 
@@ -42,9 +46,7 @@ export const EQUIPMENT_TERMS_ACCEPT_CUSTOM_ID = 'equipment_terms:accept';
 export const EQUIPMENT_TERMS_DENY_CUSTOM_ID = 'equipment_terms:deny';
 export const EQUIPMENT_LOAN_ACTION_CUSTOM_ID_PREFIX = 'equipment_loan:';
 
-interface DiscordChannel {
-  id: string;
-}
+type DiscordChannel = DiscordManagedChannel;
 
 interface DiscordMessageResult {
   id?: string;
@@ -159,56 +161,182 @@ export async function syncEquipmentLoanChannel(
   env: Env,
   event: EquipmentLoanSyncInternalEvent,
 ) {
-  let channelId = event.channelId ?? null;
+  let syncEvent = event;
+  let legacyChannelId: string | null = null;
+  let thread: DiscordManagedChannel | null = null;
 
   if (event.reminderKind) {
     const reminderResult = await sendEquipmentLoanReminder(
       env,
-      channelId,
+      event.channelId ?? null,
       event,
     );
     return {
-      channelId: reminderResult.staleChannel ? null : channelId,
+      channelId: reminderResult.staleChannel ? null : (event.channelId ?? null),
       messageId: reminderResult.staleChannel ? null : (event.messageId ?? null),
       reminderDelivered: reminderResult.reminderDelivered,
       staleChannel: reminderResult.staleChannel,
     };
   }
 
-  if (!channelId) {
-    if (!shouldCreateLoanChannel(event)) {
-      await notifyEquipmentLoanParticipants(env, event);
-
-      return {
-        channelId: null,
-        messageId: event.messageId ?? null,
-      };
+  if (event.channelId) {
+    const room = await resolveEquipmentLoanRoom(env, event.channelId, event);
+    if (!room) {
+      syncEvent = { ...event, channelId: null, messageId: null };
+    } else if (room.kind === 'thread') {
+      thread = room.channel;
+    } else {
+      legacyChannelId = room.channel.id;
+      syncEvent = { ...event, channelId: null, messageId: null };
     }
-
-    const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
-    const channel = await createEquipmentLoanChannel(env, guildId, event);
-    channelId = channel.id;
-  } else if (event.updateChannel === true) {
-    await updateEquipmentLoanChannel(env, channelId, event);
   }
 
-  await reconcileEquipmentLoanPermissions(env, channelId, event);
+  if (!thread && !syncEvent.channelId) {
+    thread = await findManagedPrivateThread(
+      env,
+      getEquipmentThreadSpec(syncEvent),
+    );
+  }
 
-  const messageResult = event.messageId
-    ? await editOrSendEquipmentLoanMessage(
-        env,
-        channelId,
-        event.messageId,
-        event,
-      )
-    : await sendEquipmentLoanMessage(env, channelId, event);
+  await assertEquipmentLoanSyncEventCurrent(env, syncEvent);
 
-  await notifyEquipmentLoanParticipants(env, event);
+  if (!shouldCreateLoanChannel(syncEvent)) {
+    await notifyEquipmentLoanParticipants(env, syncEvent);
+    const channelId = thread?.id ?? legacyChannelId;
+    if (channelId) {
+      await deleteDiscordManagedChannel(env, channelId);
+    }
+    return {
+      channelId: null,
+      messageId: null,
+    };
+  }
 
-  return {
-    channelId,
-    messageId: readMessageId(messageResult) ?? event.messageId ?? null,
-  };
+  const threadSpec = getEquipmentThreadSpec(syncEvent);
+  let didCreateThread = false;
+  if (!thread) {
+    thread = await createManagedPrivateThread(
+      env,
+      buildEquipmentLoanChannelName(syncEvent),
+      threadSpec,
+    );
+    didCreateThread = true;
+  } else {
+    thread = await prepareManagedPrivateThread(
+      env,
+      thread,
+      buildEquipmentLoanChannelName(syncEvent),
+      threadSpec,
+    );
+  }
+
+  try {
+    if (didCreateThread) {
+      await assertEquipmentLoanSyncEventCurrent(env, syncEvent);
+    }
+    await reconcileEquipmentLoanThreadMembers(env, thread.id, syncEvent);
+    const messageResult = syncEvent.messageId
+      ? await editOrSendEquipmentLoanMessage(
+          env,
+          thread.id,
+          syncEvent.messageId,
+          syncEvent,
+        )
+      : await sendEquipmentLoanMessage(env, thread.id, syncEvent);
+
+    await notifyEquipmentLoanParticipants(env, syncEvent);
+    if (legacyChannelId) {
+      await deleteDiscordManagedChannel(env, legacyChannelId);
+    }
+
+    return {
+      channelId: thread.id,
+      messageId: readMessageId(messageResult) ?? syncEvent.messageId ?? null,
+    };
+  } catch (error) {
+    if (didCreateThread) {
+      try {
+        await deleteDiscordManagedChannel(env, thread.id);
+      } catch (rollbackError) {
+        logger.warn('Failed to roll back a partial equipment private thread.', {
+          error: rollbackError,
+          loanId: syncEvent.loanId,
+          threadId: thread.id,
+        });
+      }
+    }
+    throw error;
+  }
+}
+
+async function assertEquipmentLoanSyncEventCurrent(
+  env: Env,
+  event: EquipmentLoanSyncInternalEvent,
+) {
+  const state = await requestWebsiteApi(
+    env,
+    `/loans/${encodeURIComponent(event.loanId)}/discord-sync-state`,
+  );
+  if (
+    !isRecord(state) ||
+    state.status !== event.status ||
+    state.syncRevision !== event.syncRevision
+  ) {
+    throw new BadRequestError('Equipment loan Discord sync event is stale.');
+  }
+}
+
+async function resolveEquipmentLoanRoom(
+  env: Env,
+  channelId: string,
+  event: EquipmentLoanSyncInternalEvent,
+) {
+  const channel = await getDiscordManagedChannel(env, channelId);
+  if (!channel) {
+    return null;
+  }
+  if (isDiscordPrivateThread(channel)) {
+    assertManagedPrivateThread(env, channel, getEquipmentThreadSpec(event));
+    return { channel, kind: 'thread' as const };
+  }
+
+  assertLegacyEquipmentLoanChannelOwnership(env, channel, event);
+  return { channel, kind: 'legacy' as const };
+}
+
+function assertLegacyEquipmentLoanChannelOwnership(
+  env: Env,
+  channel: DiscordChannel,
+  event: EquipmentLoanSyncInternalEvent,
+) {
+  const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
+  const isAllowedCategory =
+    channel.parent_id === EQUIPMENT_LOAN_CATEGORY_ID ||
+    channel.parent_id === EQUIPMENT_LOAN_ARCHIVE_CATEGORY_ID;
+  if (
+    channel.guild_id !== guildId ||
+    (channel.type !== 0 && channel.type !== undefined) ||
+    !isAllowedCategory ||
+    !channel.topic?.startsWith(buildEquipmentLoanLegacyTopicPrefix(event))
+  ) {
+    throw new BadRequestError('Equipment loan channel ownership mismatch.');
+  }
+}
+
+async function reconcileEquipmentLoanThreadMembers(
+  env: Env,
+  threadId: string,
+  event: EquipmentLoanSyncInternalEvent,
+) {
+  const discordIds = unique([
+    event.borrower.discordId,
+    ...(event.lender?.discordId ? [event.lender.discordId] : []),
+  ]);
+  await Promise.all(
+    discordIds.map((discordId) =>
+      addManagedPrivateThreadMember(env, threadId, discordId),
+    ),
+  );
 }
 
 function createEquipmentTermsPayload(env: Env): {
@@ -264,76 +392,6 @@ function createEquipmentTermsPayload(env: Env): {
 
 function shouldCreateLoanChannel(event: EquipmentLoanSyncInternalEvent) {
   return event.status === 'active' || event.status === 'pending_return';
-}
-
-async function createEquipmentLoanChannel(
-  env: Env,
-  guildId: string,
-  event: EquipmentLoanSyncInternalEvent,
-): Promise<DiscordChannel> {
-  return discordApiRequest<DiscordChannel>(env, `/guilds/${guildId}/channels`, {
-    body: JSON.stringify({
-      name: buildEquipmentLoanChannelName(event),
-      parent_id: getEquipmentLoanCategoryId(event),
-      permission_overwrites: buildInitialPermissionOverwrites(guildId),
-      topic: buildEquipmentLoanTopic(event),
-      type: 0,
-    }),
-    method: 'POST',
-  });
-}
-
-async function updateEquipmentLoanChannel(
-  env: Env,
-  channelId: string,
-  event: EquipmentLoanSyncInternalEvent,
-) {
-  await discordApiRequest(env, `/channels/${channelId}`, {
-    body: JSON.stringify({
-      name: buildEquipmentLoanChannelName(event),
-      parent_id: getEquipmentLoanCategoryId(event),
-      topic: buildEquipmentLoanTopic(event),
-    }),
-    method: 'PATCH',
-  });
-}
-
-async function reconcileEquipmentLoanPermissions(
-  env: Env,
-  channelId: string,
-  event: EquipmentLoanSyncInternalEvent,
-) {
-  await Promise.all([
-    allowMemberInEquipmentLoanChannel(env, channelId, event.borrower.discordId),
-    ...(event.lender?.discordId
-      ? [
-          allowMemberInEquipmentLoanChannel(
-            env,
-            channelId,
-            event.lender.discordId,
-          ),
-        ]
-      : []),
-  ]);
-}
-
-async function allowMemberInEquipmentLoanChannel(
-  env: Env,
-  channelId: string,
-  discordId: string,
-) {
-  await discordApiRequest(
-    env,
-    `/channels/${channelId}/permissions/${discordId}`,
-    {
-      body: JSON.stringify({
-        allow: CHANNEL_ACCESS,
-        deny: '0',
-        type: 1,
-      }),
-      method: 'PUT',
-    },
-  );
 }
 
 async function sendEquipmentLoanMessage(
@@ -479,25 +537,6 @@ async function notifyEquipmentLoanParticipants(
   );
 }
 
-function buildInitialPermissionOverwrites(guildId: string) {
-  return [
-    {
-      allow: '0',
-      deny: String(VIEW_CHANNEL),
-      id: guildId,
-      type: 0,
-    },
-    ...unique([DISCORD_ROLE_IDS.admin, DISCORD_ROLE_IDS.executive]).map(
-      (roleId) => ({
-        allow: CHANNEL_ACCESS,
-        deny: '0',
-        id: roleId,
-        type: 0,
-      }),
-    ),
-  ];
-}
-
 function buildEquipmentLoanComponents(
   env: Env,
   event: EquipmentLoanSyncInternalEvent,
@@ -551,7 +590,7 @@ function buildEquipmentLoanContent(event: EquipmentLoanSyncInternalEvent) {
     return 'The borrower marked this equipment ready to return. The lender or PPC staff should confirm once the item is back.';
   }
 
-  return 'Equipment loan coordination channel. Use this space for pickup, handoff, care notes, and return details.';
+  return 'Equipment loan coordination thread. Use this space for pickup, handoff, care notes, and return details.';
 }
 
 function buildEquipmentLoanEmbed(
@@ -621,23 +660,27 @@ function buildEquipmentLoanChannelName(event: EquipmentLoanSyncInternalEvent) {
   return sanitizeChannelName(`${prefix}-${label}-${event.borrower.name}`);
 }
 
-function buildEquipmentLoanTopic(event: EquipmentLoanSyncInternalEvent) {
-  return truncate(
-    [
-      `${event.isPpcOwned ? 'PPC' : 'Personal'} equipment loan`,
-      event.equipment.assetTag
-        ? `${event.equipment.name} (${event.equipment.assetTag})`
-        : event.equipment.name,
-      `Borrower ${event.borrower.name}`,
-      event.lender
-        ? `Lender ${event.lender.name}`
-        : 'Lender PPC Equipment Team',
-      event.dueDate ? `Due ${formatPlainDate(event.dueDate)}` : null,
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join(' | '),
-    1_024,
-  );
+function getEquipmentThreadSpec(
+  event: EquipmentLoanSyncInternalEvent,
+): ManagedPrivateThreadSpec {
+  return {
+    marker: `--pcc-equipment-${event.loanId}`,
+    parentChannelId: EQUIPMENT_LOAN_REQUESTS_CHANNEL_ID,
+    syncRevision: event.syncRevision,
+  };
+}
+
+function buildEquipmentLoanLegacyTopicPrefix(
+  event: EquipmentLoanSyncInternalEvent,
+) {
+  return [
+    `${event.isPpcOwned ? 'PPC' : 'Personal'} equipment loan`,
+    event.equipment.assetTag
+      ? `${event.equipment.name} (${event.equipment.assetTag})`
+      : event.equipment.name,
+    `Borrower ${event.borrower.name}`,
+    event.lender ? `Lender ${event.lender.name}` : 'Lender PPC Equipment Team',
+  ].join(' | ');
 }
 
 function parseEquipmentLoanActionCustomId(customId: string) {
@@ -747,11 +790,11 @@ function buildEquipmentLoanDmContent(
       return role === 'borrower'
         ? buildMessage(
             'Equipment loan approved',
-            'A coordination channel is ready in Discord.',
+            'A coordination thread is ready in Discord.',
           )
         : buildMessage(
             'Equipment loan approved',
-            'A coordination channel is ready in Discord.',
+            'A coordination thread is ready in Discord.',
           );
     case 'pending_return':
       return role === 'borrower'
@@ -775,12 +818,6 @@ function buildEquipmentLoanDmContent(
     default:
       return buildMessage('Equipment loan updated', 'The loan status changed.');
   }
-}
-
-function getEquipmentLoanCategoryId(event: EquipmentLoanSyncInternalEvent) {
-  return event.status === 'returned'
-    ? EQUIPMENT_LOAN_ARCHIVE_CATEGORY_ID
-    : EQUIPMENT_LOAN_CATEGORY_ID;
 }
 
 function formatLoanStatus(status: EquipmentLoanSyncInternalEvent['status']) {

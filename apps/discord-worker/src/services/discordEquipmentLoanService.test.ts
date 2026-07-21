@@ -337,6 +337,7 @@ function createReminderEvent(): EquipmentLoanSyncInternalEvent {
     approvedAt: '2026-07-02T12:00:00.000Z',
     returnedAt: null,
     status: 'active',
+    syncRevision: 1,
     termsSnapshot: null,
     type: 'website.equipment.loan.sync',
     updateChannel: false,

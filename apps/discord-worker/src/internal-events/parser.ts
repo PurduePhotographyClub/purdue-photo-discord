@@ -571,6 +571,7 @@ function parseEquipmentLoanSyncEvent(
   const approvedAt = readNullableString(payload, 'approvedAt');
   const returnedAt = readNullableString(payload, 'returnedAt');
   const status = readString(payload, 'status');
+  const syncRevision = readInteger(payload, 'syncRevision');
   const isPpcOwned = readBoolean(payload, 'isPpcOwned');
   const channelId = readNullableString(payload, 'channelId');
   const messageId = readNullableString(payload, 'messageId');
@@ -620,6 +621,15 @@ function parseEquipmentLoanSyncEvent(
     throw new BadRequestError('Equipment loan isPpcOwned is required.');
   }
 
+  if (syncRevision === null || syncRevision < 0) {
+    throw new BadRequestError(
+      'Equipment loan syncRevision must be a non-negative integer.',
+    );
+  }
+
+  assertOptionalDiscordSnowflake(channelId, 'Equipment loan channelId');
+  assertOptionalDiscordSnowflake(messageId, 'Equipment loan messageId');
+
   if (
     reminderKind !== undefined &&
     reminderKind !== null &&
@@ -636,6 +646,7 @@ function parseEquipmentLoanSyncEvent(
     loanId,
     requestedAt,
     status,
+    syncRevision,
     type: 'website.equipment.loan.sync',
     ...(approvedAt !== undefined ? { approvedAt } : {}),
     ...(channelId !== undefined ? { channelId } : {}),
@@ -913,6 +924,7 @@ function readEquipmentLoanParty(
       `Equipment loan ${field} needs discordId, name, and userId.`,
     );
   }
+  assertDiscordSnowflake(discordId, `Equipment loan ${field} discordId`);
 
   return {
     discordId,
