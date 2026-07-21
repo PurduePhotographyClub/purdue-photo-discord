@@ -1,5 +1,4 @@
 import { InteractionResponseType } from 'discord-interactions';
-import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import { ephemeralResponse } from '../discord/responses';
 import type {
   ComponentInteraction,
@@ -62,12 +61,6 @@ export function handleFilmRequestReviewButton(
     return ephemeralResponse('I could not identify that film request.');
   }
 
-  if (!hasFilmRequestReviewRole(interaction)) {
-    return ephemeralResponse(
-      'Only the Executive role can accept or deny film requests.',
-    );
-  }
-
   return {
     data: createFilmRequestReviewModalPayload(review.action, review.requestId),
     type: InteractionResponseType.MODAL,
@@ -88,12 +81,6 @@ export async function handleFilmRequestReviewModalSubmit(
   const discordId = interaction.member?.user?.id ?? interaction.user?.id;
   if (!discordId) {
     return ephemeralResponse('I could not identify your Discord account.');
-  }
-
-  if (!hasFilmRequestReviewRole(interaction)) {
-    return ephemeralResponse(
-      'Only the Executive role can accept or deny film requests.',
-    );
   }
 
   const values = readModalValues(interaction);
@@ -400,14 +387,6 @@ function readFilmRequestReviewParts(value: string): {
   }
 
   return { action, requestId };
-}
-
-function hasFilmRequestReviewRole(
-  interaction: ComponentInteraction | ModalSubmitInteraction,
-) {
-  return (
-    interaction.member?.roles?.includes(DISCORD_ROLE_IDS.executive) === true
-  );
 }
 
 function readModalValues(interaction: ModalSubmitInteraction) {

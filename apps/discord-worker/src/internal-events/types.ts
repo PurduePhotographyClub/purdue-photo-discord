@@ -76,11 +76,13 @@ export interface DarkroomScheduleSyncInternalEvent {
   channelId?: string | null;
   deleteChannel?: boolean;
   endsAt: string;
+  managerDiscordIds?: string[];
   messageId?: string | null;
   notificationAction?: 'cancel' | 'end';
   registeredCount: number;
   registrants: DarkroomScheduleRegistrant[];
   removeDiscordIds?: string[];
+  removeManagerDiscordIds?: string[];
   slotId: string;
   startsAt: string;
   status: 'cancelled' | 'open';
@@ -122,8 +124,10 @@ export interface StudioScheduleSyncInternalEvent {
   channelId?: string | null;
   deleteChannel?: boolean;
   endsAt: string;
+  managerDiscordIds?: string[];
   messageId?: string | null;
   removeDiscordId?: string | null;
+  removeManagerDiscordIds?: string[];
   requestId: string;
   requester: StudioScheduleRequester;
   startsAt: string;
@@ -178,9 +182,11 @@ export interface EquipmentLoanSyncInternalEvent {
   isPpcOwned: boolean;
   lender?: EquipmentLoanParty | null;
   loanId: string;
+  managerDiscordIds?: string[];
   messageId?: string | null;
   notes?: string | null;
   reminderKind?: 'due_soon' | 'overdue';
+  removeManagerDiscordIds?: string[];
   requestedAt: string;
   returnedAt?: string | null;
   status: 'active' | 'pending' | 'pending_return' | 'rejected' | 'returned';

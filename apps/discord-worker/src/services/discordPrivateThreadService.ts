@@ -107,12 +107,16 @@ export function assertManagedPrivateThread(
   env: Env,
   channel: DiscordManagedChannel,
   spec: ManagedPrivateThreadSpec,
+  options: { allowMissingOwner?: boolean } = {},
 ) {
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
   const applicationId = getRequiredEnv(env, 'DISCORD_APPLICATION_ID');
+  const ownerMatches =
+    channel.owner_id === applicationId ||
+    (options.allowMissingOwner === true && channel.owner_id === undefined);
   if (
     channel.guild_id !== guildId ||
-    channel.owner_id !== applicationId ||
+    !ownerMatches ||
     channel.parent_id !== spec.parentChannelId ||
     channel.type !== DISCORD_PRIVATE_THREAD_TYPE
   ) {
@@ -133,8 +137,9 @@ export async function prepareManagedPrivateThread(
   thread: DiscordManagedChannel,
   displayName: string,
   spec: ManagedPrivateThreadSpec,
+  options: { allowMissingOwner?: boolean } = {},
 ) {
-  assertManagedPrivateThread(env, thread, spec);
+  assertManagedPrivateThread(env, thread, spec, options);
   const name = buildManagedPrivateThreadName(displayName, spec);
   await discordApiRequest(env, `/channels/${thread.id}`, {
     body: JSON.stringify({

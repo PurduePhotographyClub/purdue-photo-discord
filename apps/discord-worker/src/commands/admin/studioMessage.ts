@@ -5,7 +5,6 @@ import type { DiscordCommand } from '../../discord/types';
 import { ephemeralResponse } from '../../discord/responses';
 import { requestWebsiteApi } from '../../services/websiteApiService';
 import { getErrorMessage } from '../../utils/errors';
-import { getExecutiveRoleError } from './permissions';
 
 interface StudioMessageApiResponse {
   channelId?: unknown;
@@ -19,17 +18,19 @@ export const studioMessageCommand: DiscordCommand = {
     name: 'studio-message',
   },
   execute: async (interaction, env) => {
-    const permissionError = getExecutiveRoleError(interaction, env);
-
-    if (permissionError) {
-      return ephemeralResponse(permissionError);
+    const actorDiscordId = interaction.member?.user?.id ?? interaction.user?.id;
+    if (!actorDiscordId) {
+      return ephemeralResponse('Could not identify your Discord user ID.');
     }
 
     try {
       const response = await requestWebsiteApi(
         env,
         '/admin/studio/schedule-message',
-        { method: 'POST' },
+        {
+          body: { actorDiscordId },
+          method: 'POST',
+        },
       );
       const result = readStudioMessageApiResponse(response);
 
