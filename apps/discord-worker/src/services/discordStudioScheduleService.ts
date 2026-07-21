@@ -1,4 +1,3 @@
-import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import { discordApiRequest } from '../discord/api';
 import { ephemeralResponse } from '../discord/responses';
 import type {
@@ -28,6 +27,7 @@ import {
   getDiscordManagedChannel,
   isDiscordPrivateThread,
   prepareManagedPrivateThread,
+  removeManagedPrivateThreadMember,
   type DiscordManagedChannel,
   type ManagedPrivateThreadSpec,
 } from './discordPrivateThreadService';
@@ -107,8 +107,12 @@ export function isStudioReviewButtonCustomId(customId: string) {
 export function isStudioCancelButtonCustomId(customId: string) {
   return (
     customId === STUDIO_CANCEL_NEXT_CUSTOM_ID ||
-    parseStudioCancelCustomId(customId) !== null
+    isStudioDirectCancelButtonCustomId(customId)
   );
+}
+
+export function isStudioDirectCancelButtonCustomId(customId: string) {
+  return parseStudioCancelCustomId(customId) !== null;
 }
 
 export function isStudioModalCustomId(customId: string) {
@@ -169,12 +173,6 @@ export function handleStudioReviewButton(
   const review = parseStudioReviewCustomId(interaction.data.custom_id);
   if (!review) {
     return ephemeralResponse('I could not identify that studio request.');
-  }
-
-  if (!hasStudioReviewRole(interaction)) {
-    return ephemeralResponse(
-      'Only the Executive role can approve or deny studio requests.',
-    );
   }
 
   return {
@@ -464,12 +462,6 @@ async function submitStudioReviewModal(
     return ephemeralResponse('I could not identify your Discord account.');
   }
 
-  if (!hasStudioReviewRole(interaction)) {
-    return ephemeralResponse(
-      'Only the Executive role can approve or deny studio requests.',
-    );
-  }
-
   const values = readModalValues(interaction);
   let result: unknown;
   try {
@@ -511,6 +503,7 @@ export async function syncStudioScheduleChannel(
   let syncEvent = event;
   let legacyChannelId: string | null = null;
   let thread: DiscordManagedChannel | null = null;
+  let threadAllowsMissingOwner = false;
 
   await assertStudioScheduleSyncEventCurrent(env, event, {
     allowArchived: event.deleteChannel === true,
@@ -522,6 +515,7 @@ export async function syncStudioScheduleChannel(
       syncEvent = { ...event, channelId: null, messageId: null };
     } else if (room.kind === 'thread') {
       thread = room.channel;
+      threadAllowsMissingOwner = true;
     } else {
       legacyChannelId = room.channel.id;
       syncEvent = { ...event, channelId: null, messageId: null };
@@ -593,6 +587,7 @@ export async function syncStudioScheduleChannel(
       thread,
       buildStudioChannelName(syncEvent),
       threadSpec,
+      { allowMissingOwner: threadAllowsMissingOwner },
     );
   }
 
@@ -600,11 +595,7 @@ export async function syncStudioScheduleChannel(
     if (didCreateThread) {
       await assertStudioScheduleSyncEventCurrent(env, syncEvent);
     }
-    await addManagedPrivateThreadMember(
-      env,
-      thread.id,
-      syncEvent.requester.discordId,
-    );
+    await reconcileStudioScheduleThreadMembers(env, thread.id, syncEvent);
     const messageResult = syncEvent.messageId
       ? await editOrSendStudioMessage(
           env,
@@ -636,6 +627,31 @@ export async function syncStudioScheduleChannel(
     }
     throw error;
   }
+}
+
+async function reconcileStudioScheduleThreadMembers(
+  env: Env,
+  threadId: string,
+  event: StudioScheduleSyncInternalEvent,
+) {
+  const activeDiscordIds = unique([
+    event.requester.discordId,
+    ...(event.managerDiscordIds ?? []),
+  ]);
+  const activeDiscordIdSet = new Set(activeDiscordIds);
+  const idsToRemove = unique([
+    ...(event.removeDiscordId ? [event.removeDiscordId] : []),
+    ...(event.removeManagerDiscordIds ?? []),
+  ]).filter((discordId) => !activeDiscordIdSet.has(discordId));
+
+  await Promise.all([
+    ...activeDiscordIds.map((discordId) =>
+      addManagedPrivateThreadMember(env, threadId, discordId),
+    ),
+    ...idsToRemove.map((discordId) =>
+      removeManagedPrivateThreadMember(env, threadId, discordId),
+    ),
+  ]);
 }
 
 async function assertStudioScheduleSyncEventCurrent(
@@ -691,7 +707,9 @@ async function resolveStudioScheduleRoom(
     return null;
   }
   if (isDiscordPrivateThread(channel)) {
-    assertManagedPrivateThread(env, channel, getStudioThreadSpec(event));
+    assertManagedPrivateThread(env, channel, getStudioThreadSpec(event), {
+      allowMissingOwner: true,
+    });
     return { channel, kind: 'thread' as const };
   }
 
@@ -1470,14 +1488,6 @@ function parseStudioReviewParts(value: string) {
   } as const;
 }
 
-function hasStudioReviewRole(interaction: { member?: { roles?: string[] } }) {
-  return (interaction.member?.roles ?? []).some(
-    (roleId) =>
-      roleId === DISCORD_ROLE_IDS.executive ||
-      roleId === DISCORD_ROLE_IDS.admin,
-  );
-}
-
 function readWebsiteStudioActionResponse(
   value: unknown,
 ): WebsiteStudioActionResponse {
@@ -1559,4 +1569,8 @@ function truncate(value: string, maxLength: number) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function unique(values: string[]) {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }

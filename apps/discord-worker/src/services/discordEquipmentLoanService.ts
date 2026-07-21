@@ -23,6 +23,7 @@ import {
   getDiscordManagedChannel,
   isDiscordPrivateThread,
   prepareManagedPrivateThread,
+  removeManagedPrivateThreadMember,
   type DiscordManagedChannel,
   type ManagedPrivateThreadSpec,
 } from './discordPrivateThreadService';
@@ -164,6 +165,7 @@ export async function syncEquipmentLoanChannel(
   let syncEvent = event;
   let legacyChannelId: string | null = null;
   let thread: DiscordManagedChannel | null = null;
+  let threadAllowsMissingOwner = false;
 
   if (event.reminderKind) {
     const reminderResult = await sendEquipmentLoanReminder(
@@ -185,6 +187,7 @@ export async function syncEquipmentLoanChannel(
       syncEvent = { ...event, channelId: null, messageId: null };
     } else if (room.kind === 'thread') {
       thread = room.channel;
+      threadAllowsMissingOwner = true;
     } else {
       legacyChannelId = room.channel.id;
       syncEvent = { ...event, channelId: null, messageId: null };
@@ -227,6 +230,7 @@ export async function syncEquipmentLoanChannel(
       thread,
       buildEquipmentLoanChannelName(syncEvent),
       threadSpec,
+      { allowMissingOwner: threadAllowsMissingOwner },
     );
   }
 
@@ -296,7 +300,9 @@ async function resolveEquipmentLoanRoom(
     return null;
   }
   if (isDiscordPrivateThread(channel)) {
-    assertManagedPrivateThread(env, channel, getEquipmentThreadSpec(event));
+    assertManagedPrivateThread(env, channel, getEquipmentThreadSpec(event), {
+      allowMissingOwner: true,
+    });
     return { channel, kind: 'thread' as const };
   }
 
@@ -328,15 +334,24 @@ async function reconcileEquipmentLoanThreadMembers(
   threadId: string,
   event: EquipmentLoanSyncInternalEvent,
 ) {
-  const discordIds = unique([
+  const activeDiscordIds = unique([
     event.borrower.discordId,
     ...(event.lender?.discordId ? [event.lender.discordId] : []),
+    ...(event.managerDiscordIds ?? []),
   ]);
-  await Promise.all(
-    discordIds.map((discordId) =>
+  const activeDiscordIdSet = new Set(activeDiscordIds);
+  const idsToRemove = unique(event.removeManagerDiscordIds ?? []).filter(
+    (discordId) => !activeDiscordIdSet.has(discordId),
+  );
+
+  await Promise.all([
+    ...activeDiscordIds.map((discordId) =>
       addManagedPrivateThreadMember(env, threadId, discordId),
     ),
-  );
+    ...idsToRemove.map((discordId) =>
+      removeManagedPrivateThreadMember(env, threadId, discordId),
+    ),
+  ]);
 }
 
 function createEquipmentTermsPayload(env: Env): {

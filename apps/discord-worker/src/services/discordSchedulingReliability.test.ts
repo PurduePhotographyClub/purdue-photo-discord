@@ -181,7 +181,7 @@ test('schedule root messages use deterministic Discord nonces', async () => {
   assert.match(studio, /nonce:\s*buildStudioReviewMessageNonce/);
 });
 
-test('schedule threads verify guild, parent, type, owner, marker, and revision', async () => {
+test('schedule threads verify strong ownership guards and reject explicit foreign owners', async () => {
   const [darkroom, equipment, privateThreads, studio] = await Promise.all([
     readSource('./discordDarkroomScheduleService.ts'),
     readSource('./discordEquipmentLoanService.ts'),
@@ -190,7 +190,10 @@ test('schedule threads verify guild, parent, type, owner, marker, and revision',
   ]);
 
   assert.match(privateThreads, /channel\.guild_id !== guildId/);
-  assert.match(privateThreads, /channel\.owner_id !== applicationId/);
+  assert.match(privateThreads, /channel\.owner_id === applicationId/);
+  assert.match(privateThreads, /options\.allowMissingOwner === true/);
+  assert.match(privateThreads, /channel\.owner_id === undefined/);
+  assert.match(privateThreads, /!ownerMatches/);
   assert.match(privateThreads, /channel\.parent_id !== spec\.parentChannelId/);
   assert.match(privateThreads, /channel\.type !== DISCORD_PRIVATE_THREAD_TYPE/);
   assert.match(privateThreads, /storedRevision > spec\.syncRevision/);

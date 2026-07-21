@@ -11,7 +11,6 @@ import type {
   DarkroomScheduleWeeklyJoinMessageInternalEvent,
   DarkroomScheduleWeeklyJoinSlot,
 } from '../internal-events/types';
-import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import { requestWebsiteApi } from './websiteApiService';
 import { BadRequestError, DiscordApiError } from '../utils/errors';
 import { getOptionalEnv, getRequiredEnv } from '../utils/env';
@@ -78,6 +77,12 @@ interface DiscordScheduleSessionActionResponse {
   ok?: boolean;
   syncEvent?: DarkroomScheduleSyncInternalEvent;
   weeklyJoinMessageEvents?: DarkroomScheduleWeeklyJoinMessageInternalEvent[];
+}
+
+interface DiscordScheduleSyncResultResponse {
+  ok: true;
+  stale: boolean;
+  syncEvent?: DarkroomScheduleSyncInternalEvent;
 }
 
 export function isDarkroomScheduleDropCustomId(customId: string) {
@@ -182,12 +187,6 @@ export async function handleDarkroomScheduleSessionActionButton(
     return ephemeralResponse('I could not identify this darkroom session.');
   }
 
-  if (!hasDarkroomSessionControlRole(interaction)) {
-    return ephemeralResponse(
-      'Only the Executive role can end or cancel darkroom sessions.',
-    );
-  }
-
   const result = await requestWebsiteApi(
     env,
     `/darkroom/schedule/${encodeURIComponent(slotId)}/session-by-discord`,
@@ -263,6 +262,7 @@ export async function syncDarkroomScheduleChannel(
   let syncEvent = event;
   let legacyChannelId: string | null = null;
   let thread: DiscordManagedChannel | null = null;
+  let threadAllowsMissingOwner = false;
 
   await assertDarkroomScheduleSyncEventCurrent(env, event, {
     allowArchived: shouldDeleteScheduleRoom(event),
@@ -274,6 +274,7 @@ export async function syncDarkroomScheduleChannel(
       syncEvent = { ...event, channelId: null, messageId: null };
     } else if (room.kind === 'thread') {
       thread = room.channel;
+      threadAllowsMissingOwner = true;
     } else {
       legacyChannelId = room.channel.id;
       syncEvent = { ...event, channelId: null, messageId: null };
@@ -331,6 +332,7 @@ export async function syncDarkroomScheduleChannel(
       thread,
       buildScheduleChannelName(syncEvent),
       threadSpec,
+      { allowMissingOwner: threadAllowsMissingOwner },
     );
   }
 
@@ -425,7 +427,9 @@ async function resolveDarkroomScheduleRoom(
     return null;
   }
   if (isDiscordPrivateThread(channel)) {
-    assertManagedPrivateThread(env, channel, getDarkroomThreadSpec(event));
+    assertManagedPrivateThread(env, channel, getDarkroomThreadSpec(event), {
+      allowMissingOwner: true,
+    });
     return { channel, kind: 'thread' as const };
   }
 
@@ -482,11 +486,15 @@ async function reconcileScheduleThreadMembers(
 ) {
   const activeDiscordIds = new Set(
     isActiveScheduleChannel(event)
-      ? event.registrants.map((registrant) => registrant.discordId)
+      ? [
+          ...event.registrants.map((registrant) => registrant.discordId),
+          ...(event.managerDiscordIds ?? []),
+        ]
       : [],
   );
   const idsToRemove = [
     ...(event.removeDiscordIds ?? []),
+    ...(event.removeManagerDiscordIds ?? []),
     ...(!isActiveScheduleChannel(event)
       ? event.registrants.map((registrant) => registrant.discordId)
       : []),
@@ -653,6 +661,18 @@ function buildScheduleComponents(
         {
           custom_id: `${DARKROOM_SCHEDULE_DROP_CUSTOM_ID_PREFIX}${event.slotId}`,
           label: 'Drop my slot',
+          style: DANGER_BUTTON,
+          type: BUTTON,
+        },
+        {
+          custom_id: `${DARKROOM_SCHEDULE_END_CUSTOM_ID_PREFIX}${event.slotId}`,
+          label: 'End Session',
+          style: DANGER_BUTTON,
+          type: BUTTON,
+        },
+        {
+          custom_id: `${DARKROOM_SCHEDULE_CANCEL_CUSTOM_ID_PREFIX}${event.slotId}`,
+          label: 'Cancel Session',
           style: DANGER_BUTTON,
           type: BUTTON,
         },
@@ -1176,7 +1196,46 @@ async function syncDarkroomScheduleAndPersist(
   event: DarkroomScheduleSyncInternalEvent,
 ) {
   const result = await syncDarkroomScheduleChannel(env, event);
-  await requestWebsiteApi(
+  const persisted = await persistDarkroomScheduleSyncResult(env, event, result);
+  const latestEvent = persisted.syncEvent;
+  if (!persisted.stale || !latestEvent) {
+    return result;
+  }
+
+  if (
+    latestEvent.slotId !== event.slotId ||
+    latestEvent.syncRevision <= event.syncRevision
+  ) {
+    throw new BadRequestError(
+      'Website API returned an invalid darkroom convergence event.',
+    );
+  }
+
+  // A drop can commit just before a rejoin increments the revision. If the old
+  // Discord mutation wins the race, repair exactly once from the API-authored
+  // latest event so the member list converges without an unbounded callback
+  // loop.
+  const repaired = await syncDarkroomScheduleChannel(env, latestEvent);
+  const repairedPersistence = await persistDarkroomScheduleSyncResult(
+    env,
+    latestEvent,
+    repaired,
+  );
+  if (repairedPersistence.stale) {
+    logger.warn('Darkroom convergence raced with another schedule revision.', {
+      slotId: latestEvent.slotId,
+      syncRevision: latestEvent.syncRevision,
+    });
+  }
+  return repaired;
+}
+
+async function persistDarkroomScheduleSyncResult(
+  env: Env,
+  event: DarkroomScheduleSyncInternalEvent,
+  result: { channelId: string | null; messageId: string | null },
+): Promise<DiscordScheduleSyncResultResponse> {
+  const response = await requestWebsiteApi(
     env,
     `/darkroom/schedule/${encodeURIComponent(event.slotId)}/sync-result-by-discord`,
     {
@@ -1184,12 +1243,29 @@ async function syncDarkroomScheduleAndPersist(
         channelId: result.channelId,
         deleted: event.deleteChannel === true,
         messageId: result.messageId,
+        removeManagerDiscordIds: event.removeManagerDiscordIds ?? [],
         syncRevision: event.syncRevision,
       },
       method: 'POST',
     },
   );
-  return result;
+  if (
+    !isRecord(response) ||
+    response.ok !== true ||
+    typeof response.stale !== 'boolean'
+  ) {
+    throw new BadRequestError(
+      'Website API returned an invalid darkroom sync result.',
+    );
+  }
+
+  return {
+    ok: true,
+    stale: response.stale,
+    ...(isDarkroomScheduleSyncEvent(response.syncEvent)
+      ? { syncEvent: response.syncEvent }
+      : {}),
+  };
 }
 
 function appendDarkroomSyncWarning(message: string, hasWarning: boolean) {
@@ -1259,14 +1335,6 @@ function readSessionSlotIdFromCustomId(customId: string) {
   }
 
   return '';
-}
-
-function hasDarkroomSessionControlRole(interaction: ComponentInteraction) {
-  const roles = interaction.member?.roles ?? [];
-  return (
-    roles.includes(DISCORD_ROLE_IDS.executive) ||
-    roles.includes(DISCORD_ROLE_IDS.admin)
-  );
 }
 
 function isDarkroomWeeklyJoinMessageEvent(

@@ -8,7 +8,6 @@ import type {
 import { ephemeralResponse } from '../../discord/responses';
 import { requestWebsiteApi } from '../../services/websiteApiService';
 import { getErrorMessage } from '../../utils/errors';
-import { getExecutiveRoleError } from './permissions';
 
 const NUMBER_FORMATTER = new Intl.NumberFormat('en-US');
 
@@ -34,12 +33,6 @@ export const darkroomStatsCommand: DiscordCommand = {
     name: 'darkroom-stats',
   },
   execute: async (interaction, env) => {
-    const permissionError = getExecutiveRoleError(interaction, env);
-
-    if (permissionError) {
-      return ephemeralResponse(permissionError);
-    }
-
     const discordId = getInteractionUserId(interaction);
     if (!discordId) {
       return ephemeralResponse('Could not identify your Discord user ID.');

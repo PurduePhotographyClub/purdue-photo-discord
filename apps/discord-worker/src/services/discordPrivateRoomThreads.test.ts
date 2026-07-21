@@ -9,7 +9,10 @@ import type {
 import { parseInternalEvent } from '../internal-events/parser';
 import { syncDarkroomScheduleChannel } from './discordDarkroomScheduleService';
 import { syncEquipmentLoanChannel } from './discordEquipmentLoanService';
-import { findManagedPrivateThread } from './discordPrivateThreadService';
+import {
+  assertManagedPrivateThread,
+  findManagedPrivateThread,
+} from './discordPrivateThreadService';
 import { syncStudioScheduleChannel } from './discordStudioScheduleService';
 
 const STUDIO_REQUESTS_CHANNEL_ID = '1513286980518023348';
@@ -31,7 +34,8 @@ test('studio rooms are private non-invitable threads with bot-managed membership
   const requests: RecordedRequest[] = [];
   installThreadCreationFetchMock(requests, {
     parentChannelId: STUDIO_REQUESTS_CHANNEL_ID,
-    participantIds: ['studio-member'],
+    participantIds: ['studio-member', 'studio-manager'],
+    removedParticipantIds: ['former-studio-manager'],
     threadId: 'studio-thread',
   });
 
@@ -50,6 +54,14 @@ test('studio rooms are private non-invitable threads with bot-managed membership
           '/api/v10/channels/studio-thread/thread-members/studio-member',
     ),
   );
+  assertThreadMemberAddedOnce(requests, 'studio-thread', 'studio-manager');
+  assertThreadMemberRemovedOnce(
+    requests,
+    'studio-thread',
+    'former-studio-manager',
+  );
+  assertThreadMemberNotRemoved(requests, 'studio-thread', 'studio-manager');
+  assertThreadMemberNotRemoved(requests, 'studio-thread', 'invited-executive');
   assertNoPermissionOverwriteRequests(requests);
 });
 
@@ -57,8 +69,8 @@ test('darkroom rooms reconcile participant additions and removals through thread
   const requests: RecordedRequest[] = [];
   installThreadCreationFetchMock(requests, {
     parentChannelId: DARKROOM_REQUESTS_CHANNEL_ID,
-    participantIds: ['darkroom-member'],
-    removedParticipantIds: ['former-member'],
+    participantIds: ['darkroom-member', 'darkroom-manager'],
+    removedParticipantIds: ['former-member', 'former-darkroom-manager'],
     threadId: 'darkroom-thread',
   });
 
@@ -80,6 +92,30 @@ test('darkroom rooms reconcile participant additions and removals through thread
           '/api/v10/channels/darkroom-thread/thread-members/former-member',
     ),
   );
+  assertThreadMemberAddedOnce(requests, 'darkroom-thread', 'darkroom-member');
+  assertThreadMemberAddedOnce(requests, 'darkroom-thread', 'darkroom-manager');
+  assertThreadMemberRemovedOnce(
+    requests,
+    'darkroom-thread',
+    'former-darkroom-manager',
+  );
+  assertThreadMemberNotRemoved(requests, 'darkroom-thread', 'darkroom-manager');
+  assertThreadMemberNotRemoved(
+    requests,
+    'darkroom-thread',
+    'invited-executive',
+  );
+  const rootMessage = requests.find(
+    ({ method, pathname }) =>
+      method === 'POST' &&
+      pathname === '/api/v10/channels/darkroom-thread/messages',
+  );
+  const rootComponents = JSON.stringify(
+    (rootMessage?.body as { components?: unknown[] } | undefined)?.components,
+  );
+  assert.match(rootComponents, /darkroom_schedule_drop:darkroom-slot/);
+  assert.match(rootComponents, /darkroom_schedule_end:darkroom-slot/);
+  assert.match(rootComponents, /darkroom_schedule_cancel:darkroom-slot/);
   assertNoPermissionOverwriteRequests(requests);
 });
 
@@ -87,7 +123,8 @@ test('equipment rooms use the equipment requests channel and add both parties', 
   const requests: RecordedRequest[] = [];
   installThreadCreationFetchMock(requests, {
     parentChannelId: EQUIPMENT_REQUESTS_CHANNEL_ID,
-    participantIds: ['borrower', 'lender'],
+    participantIds: ['borrower', 'lender', 'equipment-manager'],
+    removedParticipantIds: ['former-equipment-manager'],
     threadId: 'equipment-thread',
   });
 
@@ -98,7 +135,205 @@ test('equipment rooms use the equipment requests channel and add both parties', 
     messageId: 'equipment-thread-message',
   });
   assertPrivateThreadCreation(requests, EQUIPMENT_REQUESTS_CHANNEL_ID);
+  assertThreadMemberAddedOnce(requests, 'equipment-thread', 'borrower');
+  assertThreadMemberAddedOnce(requests, 'equipment-thread', 'lender');
+  assertThreadMemberAddedOnce(
+    requests,
+    'equipment-thread',
+    'equipment-manager',
+  );
+  assertThreadMemberRemovedOnce(
+    requests,
+    'equipment-thread',
+    'former-equipment-manager',
+  );
+  assertThreadMemberNotRemoved(
+    requests,
+    'equipment-thread',
+    'equipment-manager',
+  );
+  assertThreadMemberNotRemoved(
+    requests,
+    'equipment-thread',
+    'invited-executive',
+  );
   assertNoPermissionOverwriteRequests(requests);
+});
+
+test('darkroom join, drop, and rejoin reuse a strongly matched thread when Discord omits owner_id', async () => {
+  const requests: RecordedRequest[] = [];
+  let threadName = 'darkroom--pcc-darkroom-darkroom-slot-r1';
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ body, method, pathname: url.pathname });
+
+    if (
+      method === 'GET' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      return Response.json({
+        guild_id: 'guild-123',
+        id: 'darkroom-thread',
+        name: threadName,
+        parent_id: DARKROOM_REQUESTS_CHANNEL_ID,
+        thread_metadata: { archived: false },
+        type: 12,
+      });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      threadName = (body as { name: string }).name;
+      return Response.json({ id: 'darkroom-thread', name: threadName });
+    }
+    if (
+      method === 'PUT' &&
+      url.pathname.startsWith(
+        '/api/v10/channels/darkroom-thread/thread-members/',
+      )
+    ) {
+      return new Response(null, { status: 204 });
+    }
+    if (
+      method === 'DELETE' &&
+      url.pathname.startsWith(
+        '/api/v10/channels/darkroom-thread/thread-members/',
+      )
+    ) {
+      return new Response(null, { status: 204 });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname ===
+        '/api/v10/channels/darkroom-thread/messages/darkroom-message'
+    ) {
+      return Response.json({ id: 'darkroom-message' });
+    }
+
+    throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
+  };
+
+  const env = createEnv(undefined, {
+    darkroom: [
+      { discordSyncStatus: 'pending', status: 'open', syncRevision: 1 },
+      { discordSyncStatus: 'pending', status: 'open', syncRevision: 2 },
+      { discordSyncStatus: 'pending', status: 'open', syncRevision: 3 },
+    ],
+  });
+  const joinedEvent: DarkroomScheduleSyncInternalEvent = {
+    ...darkroomEvent(),
+    channelId: 'darkroom-thread',
+    managerDiscordIds: ['darkroom-manager'],
+    messageId: 'darkroom-message',
+    removeDiscordIds: [],
+    syncRevision: 1,
+  };
+  const droppedEvent: DarkroomScheduleSyncInternalEvent = {
+    ...darkroomEvent(),
+    channelId: 'darkroom-thread',
+    managerDiscordIds: ['darkroom-manager'],
+    messageId: 'darkroom-message',
+    registeredCount: 0,
+    registrants: [],
+    removeDiscordIds: ['darkroom-member'],
+    syncRevision: 2,
+  };
+  const rejoinedEvent: DarkroomScheduleSyncInternalEvent = {
+    ...darkroomEvent(),
+    channelId: 'darkroom-thread',
+    managerDiscordIds: ['darkroom-manager'],
+    messageId: 'darkroom-message',
+    removeDiscordIds: ['darkroom-member'],
+    syncRevision: 3,
+  };
+
+  const joined = await syncDarkroomScheduleChannel(env, joinedEvent);
+  const dropped = await syncDarkroomScheduleChannel(env, droppedEvent);
+  const rejoined = await syncDarkroomScheduleChannel(env, rejoinedEvent);
+
+  assert.deepEqual(joined, {
+    channelId: 'darkroom-thread',
+    messageId: 'darkroom-message',
+  });
+  assert.deepEqual(dropped, {
+    channelId: 'darkroom-thread',
+    messageId: 'darkroom-message',
+  });
+  assert.deepEqual(rejoined, dropped);
+  assert.deepEqual(
+    requests
+      .filter(({ pathname }) =>
+        pathname.endsWith('/thread-members/darkroom-member'),
+      )
+      .map(({ method }) => method),
+    ['PUT', 'DELETE', 'PUT'],
+  );
+  assert.equal(
+    requests.some(
+      ({ method, pathname }) =>
+        method === 'POST' && pathname.endsWith('/threads'),
+    ),
+    false,
+  );
+});
+
+test('managed private threads still reject an explicit mismatched owner_id', () => {
+  assert.throws(
+    () =>
+      assertManagedPrivateThread(
+        createEnv(),
+        {
+          guild_id: 'guild-123',
+          id: 'darkroom-thread',
+          name: 'darkroom--pcc-darkroom-darkroom-slot-r1',
+          owner_id: 'foreign-application',
+          parent_id: DARKROOM_REQUESTS_CHANNEL_ID,
+          type: 12,
+        },
+        {
+          marker: '--pcc-darkroom-darkroom-slot',
+          parentChannelId: DARKROOM_REQUESTS_CHANNEL_ID,
+          syncRevision: 1,
+        },
+      ),
+    /ownership mismatch/,
+  );
+});
+
+test('scan-discovered managed private threads require an explicit matching owner_id', async () => {
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (
+      (init?.method ?? 'GET') === 'GET' &&
+      url.pathname === '/api/v10/guilds/guild-123/threads/active'
+    ) {
+      return Response.json({
+        threads: [
+          {
+            guild_id: 'guild-123',
+            id: 'spoofed-thread',
+            name: 'darkroom--pcc-darkroom-darkroom-slot-r1',
+            parent_id: DARKROOM_REQUESTS_CHANNEL_ID,
+            type: 12,
+          },
+        ],
+      });
+    }
+    throw new Error(`Unexpected Discord API call: ${url.pathname}`);
+  };
+
+  await assert.rejects(
+    () =>
+      findManagedPrivateThread(createEnv(), {
+        marker: '--pcc-darkroom-darkroom-slot',
+        parentChannelId: DARKROOM_REQUESTS_CHANNEL_ID,
+        syncRevision: 1,
+      }),
+    /ownership mismatch/,
+  );
 });
 
 test('terminal studio, darkroom, and equipment rooms are deleted instead of archived', async () => {
@@ -262,6 +497,58 @@ test('managed thread discovery paginates through archived private threads', asyn
 test('equipment sync parsing requires revisions and validates every Discord snowflake', () => {
   const basePayload = equipmentParserPayload();
 
+  const parsed = parseInternalEvent({
+    ...basePayload,
+    managerDiscordIds: ['1517861087947657389'],
+  });
+  assert.equal(parsed.kind, 'equipmentLoan');
+  assert.deepEqual(
+    parsed.event.type === 'website.equipment.loan.sync'
+      ? parsed.event.managerDiscordIds
+      : undefined,
+    ['1517861087947657389'],
+  );
+  assert.deepEqual(
+    parsed.event.type === 'website.equipment.loan.sync'
+      ? parsed.event.removeManagerDiscordIds
+      : undefined,
+    ['1513603798029828218'],
+  );
+
+  const queuedManagerRemovals = managerRemovalQueue(25);
+  const queuedRemovalEvent = parseInternalEvent({
+    ...basePayload,
+    removeManagerDiscordIds: queuedManagerRemovals,
+  });
+  assert.deepEqual(
+    queuedRemovalEvent.kind === 'equipmentLoan'
+      ? queuedRemovalEvent.event.removeManagerDiscordIds
+      : undefined,
+    queuedManagerRemovals,
+  );
+
+  const dedupedRemovalEvent = parseInternalEvent({
+    ...basePayload,
+    removeManagerDiscordIds: [
+      queuedManagerRemovals[0],
+      queuedManagerRemovals[0],
+    ],
+  });
+  assert.deepEqual(
+    dedupedRemovalEvent.kind === 'equipmentLoan'
+      ? dedupedRemovalEvent.event.removeManagerDiscordIds
+      : undefined,
+    [queuedManagerRemovals[0]],
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...basePayload,
+        removeManagerDiscordIds: managerRemovalQueue(26),
+      }),
+    /removeManagerDiscordIds must be an array of strings/,
+  );
+
   assert.throws(
     () => parseInternalEvent({ ...basePayload, syncRevision: undefined }),
     /syncRevision must be a non-negative integer/,
@@ -278,12 +565,150 @@ test('equipment sync parsing requires revisions and validates every Discord snow
       ...basePayload,
       lender: { ...basePayload.lender, discordId: 'not-a-snowflake' },
     },
+    { ...basePayload, managerDiscordIds: ['not-a-snowflake'] },
+    { ...basePayload, removeManagerDiscordIds: ['not-a-snowflake'] },
   ]) {
     assert.throws(
       () => parseInternalEvent(payload),
       /must be a Discord snowflake/,
     );
   }
+
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...basePayload,
+        managerDiscordIds: ['1517861087947657389', '1512900016979837161'],
+      }),
+    /Equipment loan managerDiscordIds must contain at most 1 ID/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...basePayload,
+        managerDiscordIds: ['1517861087947657389', '1517861087947657389'],
+      }),
+    /Equipment loan managerDiscordIds must contain unique IDs/,
+  );
+});
+
+test('studio and darkroom sync parsing carries validated manager membership changes', () => {
+  const darkroomManagerDiscordIds = [
+    '1517861087947657389',
+    '1512900016979837161',
+  ];
+  const studioManagerDiscordIds = ['1517861087947657389'];
+  const darkroomRemoveManagerDiscordIds = ['1513286980518023348'];
+  const studioRemoveManagerDiscordIds = ['1513603798029828218'];
+  const darkroomPayload = {
+    capacity: 4,
+    endsAt: '2099-07-21T14:00:00.000Z',
+    managerDiscordIds: darkroomManagerDiscordIds,
+    removeManagerDiscordIds: darkroomRemoveManagerDiscordIds,
+    registeredCount: 0,
+    registrants: [],
+    slotId: '11111111-1111-4111-8111-111111111111',
+    startsAt: '2099-07-21T12:00:00.000Z',
+    status: 'open',
+    syncRevision: 1,
+    title: 'Open Darkroom',
+    type: 'website.darkroom.schedule.sync',
+  };
+  const studioPayload = {
+    endsAt: '2099-07-21T14:00:00.000Z',
+    managerDiscordIds: studioManagerDiscordIds,
+    removeManagerDiscordIds: studioRemoveManagerDiscordIds,
+    requester: {
+      discordId: '1512900016979837161',
+      name: 'Studio Member',
+      userId: 'studio-user',
+    },
+    requestId: '22222222-2222-4222-8222-222222222222',
+    startsAt: '2099-07-21T12:00:00.000Z',
+    status: 'approved',
+    syncRevision: 1,
+    type: 'website.studio.schedule.sync',
+  };
+
+  const darkroom = parseInternalEvent(darkroomPayload);
+  const studio = parseInternalEvent(studioPayload);
+  if (darkroom.kind !== 'darkroomSchedule') {
+    assert.fail('Expected a darkroom schedule event.');
+  }
+  if (studio.kind !== 'studioSchedule') {
+    assert.fail('Expected a studio schedule event.');
+  }
+  assert.deepEqual(darkroom.event.managerDiscordIds, darkroomManagerDiscordIds);
+  assert.deepEqual(studio.event.managerDiscordIds, studioManagerDiscordIds);
+  assert.deepEqual(
+    darkroom.event.removeManagerDiscordIds,
+    darkroomRemoveManagerDiscordIds,
+  );
+  assert.deepEqual(
+    studio.event.removeManagerDiscordIds,
+    studioRemoveManagerDiscordIds,
+  );
+
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...darkroomPayload,
+        managerDiscordIds: ['not-a-snowflake'],
+      }),
+    /Darkroom schedule managerDiscordIds must be a Discord snowflake/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...studioPayload,
+        managerDiscordIds: ['not-a-snowflake'],
+      }),
+    /Studio schedule managerDiscordIds must be a Discord snowflake/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...darkroomPayload,
+        removeManagerDiscordIds: ['not-a-snowflake'],
+      }),
+    /Darkroom schedule removeManagerDiscordIds must be a Discord snowflake/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...studioPayload,
+        removeManagerDiscordIds: ['not-a-snowflake'],
+      }),
+    /Studio schedule removeManagerDiscordIds must be a Discord snowflake/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...darkroomPayload,
+        managerDiscordIds: [
+          '1517861087947657389',
+          '1512900016979837161',
+          '1513286980518023348',
+        ],
+      }),
+    /Darkroom schedule managerDiscordIds must contain at most 2 IDs/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...darkroomPayload,
+        managerDiscordIds: ['1517861087947657389', '1517861087947657389'],
+      }),
+    /Darkroom schedule managerDiscordIds must contain unique IDs/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...studioPayload,
+        managerDiscordIds: ['1517861087947657389', '1512900016979837161'],
+      }),
+    /Studio schedule managerDiscordIds must contain at most 1 ID/,
+  );
 });
 
 test('equipment creation rolls back when the API revision turns terminal mid-sync', async () => {
@@ -696,6 +1121,54 @@ function assertNoPermissionOverwriteRequests(requests: RecordedRequest[]) {
   );
 }
 
+function assertThreadMemberAddedOnce(
+  requests: RecordedRequest[],
+  threadId: string,
+  discordId: string,
+) {
+  assert.equal(
+    requests.filter(
+      ({ method, pathname }) =>
+        method === 'PUT' &&
+        pathname ===
+          `/api/v10/channels/${threadId}/thread-members/${discordId}`,
+    ).length,
+    1,
+  );
+}
+
+function assertThreadMemberRemovedOnce(
+  requests: RecordedRequest[],
+  threadId: string,
+  discordId: string,
+) {
+  assert.equal(
+    requests.filter(
+      ({ method, pathname }) =>
+        method === 'DELETE' &&
+        pathname ===
+          `/api/v10/channels/${threadId}/thread-members/${discordId}`,
+    ).length,
+    1,
+  );
+}
+
+function assertThreadMemberNotRemoved(
+  requests: RecordedRequest[],
+  threadId: string,
+  discordId: string,
+) {
+  assert.equal(
+    requests.filter(
+      ({ method, pathname }) =>
+        method === 'DELETE' &&
+        pathname ===
+          `/api/v10/channels/${threadId}/thread-members/${discordId}`,
+    ).length,
+    0,
+  );
+}
+
 function createEnv(
   equipmentStates: Array<{ status: string; syncRevision: number }> = [
     { status: 'active', syncRevision: 1 },
@@ -770,7 +1243,9 @@ function studioEvent(): StudioScheduleSyncInternalEvent {
     channelId: null,
     endsAt: '2099-07-21T14:00:00.000Z',
     messageId: null,
+    managerDiscordIds: ['studio-manager', 'studio-member', 'studio-manager'],
     removeDiscordId: null,
+    removeManagerDiscordIds: ['former-studio-manager', 'studio-manager'],
     requestId: 'studio-request',
     requester: {
       discordId: 'studio-member',
@@ -790,6 +1265,11 @@ function darkroomEvent(): DarkroomScheduleSyncInternalEvent {
     channelId: null,
     endsAt: '2099-07-21T14:00:00.000Z',
     messageId: null,
+    managerDiscordIds: [
+      'darkroom-manager',
+      'darkroom-member',
+      'darkroom-manager',
+    ],
     registeredCount: 1,
     registrants: [
       {
@@ -800,6 +1280,7 @@ function darkroomEvent(): DarkroomScheduleSyncInternalEvent {
       },
     ],
     removeDiscordIds: ['former-member'],
+    removeManagerDiscordIds: ['former-darkroom-manager', 'darkroom-manager'],
     slotId: 'darkroom-slot',
     startsAt: '2099-07-21T12:00:00.000Z',
     status: 'open',
@@ -833,9 +1314,11 @@ function equipmentEvent(): EquipmentLoanSyncInternalEvent {
       userId: 'lender-user',
     },
     loanId: 'equipment-loan',
+    managerDiscordIds: ['equipment-manager', 'borrower', 'equipment-manager'],
     messageId: null,
     notes: null,
     requestedAt: '2026-07-19T12:00:00.000Z',
+    removeManagerDiscordIds: ['former-equipment-manager', 'equipment-manager'],
     returnedAt: null,
     status: 'active',
     syncRevision: 1,
@@ -860,6 +1343,15 @@ function equipmentParserPayload() {
       userId: 'lender-user',
     },
     loanId: 'equipment-loan',
+    managerDiscordIds: ['1517861087947657389'],
     messageId: '1513603798029828218',
+    removeManagerDiscordIds: ['1513603798029828218'],
   };
+}
+
+function managerRemovalQueue(size: number) {
+  return Array.from(
+    { length: size },
+    (_, index) => `151786108794765${String(index).padStart(4, '0')}`,
+  );
 }

@@ -238,7 +238,16 @@ function parseDarkroomScheduleEvent(
   const registeredCount = readInteger(payload, 'registeredCount');
   const syncRevision = readInteger(payload, 'syncRevision');
   const registrants = readDarkroomScheduleRegistrants(payload);
+  const managerDiscordIds = readManagerDiscordIds(
+    payload,
+    'Darkroom schedule managerDiscordIds',
+    2,
+  );
   const removeDiscordIds = readStringArray(payload, 'removeDiscordIds');
+  const removeManagerDiscordIds = readRemovedManagerDiscordIds(
+    payload,
+    'Darkroom schedule removeManagerDiscordIds',
+  );
   const channelId = readNullableString(payload, 'channelId');
   const messageId = readNullableString(payload, 'messageId');
   const notificationAction = readString(payload, 'notificationAction');
@@ -322,8 +331,10 @@ function parseDarkroomScheduleEvent(
     type: 'website.darkroom.schedule.sync',
     ...(channelId !== undefined ? { channelId } : {}),
     ...(deleteChannel !== undefined ? { deleteChannel } : {}),
+    ...(managerDiscordIds ? { managerDiscordIds } : {}),
     ...(messageId !== undefined ? { messageId } : {}),
     ...(removeDiscordIds ? { removeDiscordIds } : {}),
+    ...(removeManagerDiscordIds ? { removeManagerDiscordIds } : {}),
     ...(updateChannel !== undefined ? { updateChannel } : {}),
   };
 }
@@ -380,10 +391,19 @@ function parseStudioScheduleEvent(
   const status = readString(payload, 'status');
   const syncRevision = readInteger(payload, 'syncRevision');
   const requester = readStudioScheduleRequester(payload);
+  const managerDiscordIds = readManagerDiscordIds(
+    payload,
+    'Studio schedule managerDiscordIds',
+    1,
+  );
   const channelId = readNullableString(payload, 'channelId');
   const messageId = readNullableString(payload, 'messageId');
   const adminNote = readNullableString(payload, 'adminNote');
   const removeDiscordId = readNullableString(payload, 'removeDiscordId');
+  const removeManagerDiscordIds = readRemovedManagerDiscordIds(
+    payload,
+    'Studio schedule removeManagerDiscordIds',
+  );
   const deleteChannel = readBoolean(payload, 'deleteChannel');
   const updateChannel = readBoolean(payload, 'updateChannel');
 
@@ -432,8 +452,10 @@ function parseStudioScheduleEvent(
     ...(adminNote !== undefined ? { adminNote } : {}),
     ...(channelId !== undefined ? { channelId } : {}),
     ...(deleteChannel !== undefined ? { deleteChannel } : {}),
+    ...(managerDiscordIds ? { managerDiscordIds } : {}),
     ...(messageId !== undefined ? { messageId } : {}),
     ...(removeDiscordId !== undefined ? { removeDiscordId } : {}),
+    ...(removeManagerDiscordIds ? { removeManagerDiscordIds } : {}),
     ...(updateChannel !== undefined ? { updateChannel } : {}),
   };
 }
@@ -582,6 +604,15 @@ function parseEquipmentLoanSyncEvent(
   const borrower = readEquipmentLoanParty(payload, 'borrower');
   const lender = readNullableEquipmentLoanParty(payload, 'lender');
   const equipment = readEquipmentLoanEquipment(payload);
+  const managerDiscordIds = readManagerDiscordIds(
+    payload,
+    'Equipment loan managerDiscordIds',
+    1,
+  );
+  const removeManagerDiscordIds = readRemovedManagerDiscordIds(
+    payload,
+    'Equipment loan removeManagerDiscordIds',
+  );
 
   if (!loanId) {
     throw new BadRequestError('Equipment loan loanId is required.');
@@ -652,9 +683,11 @@ function parseEquipmentLoanSyncEvent(
     ...(channelId !== undefined ? { channelId } : {}),
     ...(dueDate !== undefined ? { dueDate } : {}),
     ...(lender !== undefined ? { lender } : {}),
+    ...(managerDiscordIds ? { managerDiscordIds } : {}),
     ...(messageId !== undefined ? { messageId } : {}),
     ...(notes !== undefined ? { notes } : {}),
     ...(reminderKind ? { reminderKind } : {}),
+    ...(removeManagerDiscordIds ? { removeManagerDiscordIds } : {}),
     ...(returnedAt !== undefined ? { returnedAt } : {}),
     ...(termsSnapshot !== undefined ? { termsSnapshot } : {}),
     ...(updateChannel !== undefined ? { updateChannel } : {}),
@@ -1332,6 +1365,47 @@ function readStringArray(
     const trimmedItem = item.trim();
     return trimmedItem.length > 0 ? [trimmedItem] : [];
   });
+}
+
+function readManagerDiscordIds(
+  payload: Record<string, unknown>,
+  label: string,
+  maxIds: number,
+) {
+  const discordIds = readStringArray(payload, 'managerDiscordIds');
+  if (!discordIds) {
+    return undefined;
+  }
+
+  if (new Set(discordIds).size !== discordIds.length) {
+    throw new BadRequestError(`${label} must contain unique IDs.`);
+  }
+  if (discordIds.length > maxIds) {
+    throw new BadRequestError(
+      `${label} must contain at most ${maxIds} ID${maxIds === 1 ? '' : 's'}.`,
+    );
+  }
+  for (const discordId of discordIds) {
+    assertDiscordSnowflake(discordId, label);
+  }
+
+  return discordIds;
+}
+
+function readRemovedManagerDiscordIds(
+  payload: Record<string, unknown>,
+  label: string,
+) {
+  const discordIds = readStringArray(payload, 'removeManagerDiscordIds');
+  if (!discordIds) {
+    return undefined;
+  }
+
+  for (const discordId of discordIds) {
+    assertDiscordSnowflake(discordId, label);
+  }
+
+  return [...new Set(discordIds)];
 }
 
 function readBoolean(
