@@ -22,8 +22,8 @@ import {
   updateDiscordScheduledEvent,
 } from '../services/discordScheduledEventService';
 import {
-  postDarkroomWeeklyJoinMessage,
   syncDarkroomScheduleChannel,
+  syncDarkroomWeeklyJoinMessageAndPersist,
 } from '../services/discordDarkroomScheduleService';
 import { syncDarkroomStatsMessage } from '../services/discordDarkroomStatsService';
 import { syncEquipmentLoanChannel } from '../services/discordEquipmentLoanService';
@@ -111,7 +111,7 @@ async function handleDarkroomWeeklyJoinMessageEvent(
   >['event'],
   env: Env,
 ): Promise<Record<string, unknown>> {
-  const result = await postDarkroomWeeklyJoinMessage(env, event, {
+  const result = await syncDarkroomWeeklyJoinMessageAndPersist(env, event, {
     allowCreate: event.allowCreate === true,
   });
 

@@ -17,6 +17,7 @@ import {
 } from '../routes/discordInteractions';
 import {
   handleDarkroomScheduleDropButton,
+  handleDarkroomScheduleJoinSelect,
   handleDarkroomScheduleSessionActionButton,
 } from './discordDarkroomScheduleService';
 import { handleEquipmentLoanActionButton } from './discordEquipmentLoanService';
@@ -417,6 +418,166 @@ test('a stale drop sync result converges once to the latest rejoin revision', as
   );
 });
 
+test('an older weekly drop refresh cannot overwrite a newer rejoin refresh', async () => {
+  const weeklyMessageId = '777777777777777777';
+  const weeklyChannelId = '1512900016979837161';
+  const completedCounts: number[] = [];
+  let patchCount = 0;
+  let releaseDropPatch: (() => void) | undefined;
+  let dropPatchStarted: (() => void) | undefined;
+  const dropPatchReady = new Promise<void>((resolve) => {
+    dropPatchStarted = resolve;
+  });
+  const holdDropPatch = new Promise<void>((resolve) => {
+    releaseDropPatch = resolve;
+  });
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    if (
+      method !== 'PATCH' ||
+      url.pathname !==
+        `/api/v10/channels/${weeklyChannelId}/messages/${weeklyMessageId}`
+    ) {
+      throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
+    }
+
+    const body = JSON.parse(String(init?.body)) as {
+      embeds: Array<{ fields: Array<{ name: string; value: string }> }>;
+    };
+    const openSlots = body.embeds[0]?.fields.find(
+      (field) => field.name === 'Open slots',
+    )?.value;
+    const registeredCount = openSlots?.includes('(1/4)') ? 1 : 0;
+    patchCount += 1;
+    if (patchCount === 1) {
+      dropPatchStarted?.();
+      await holdDropPatch;
+    }
+    completedCounts.push(registeredCount);
+    return Response.json({ id: weeklyMessageId });
+  };
+
+  const env: Env = {
+    ...apiEnv(async (request) => {
+      const pathname = new URL(request.url).pathname;
+      if (pathname.endsWith('/drop-by-discord')) {
+        return Response.json({
+          dropped: true,
+          message: 'Dropped.',
+          ok: true,
+          weeklyJoinMessageEvents: [weeklyJoinEvent(0)],
+        });
+      }
+      if (pathname.endsWith('/join-by-discord')) {
+        return Response.json({
+          joined: true,
+          message: 'Joined.',
+          ok: true,
+          weeklyJoinMessageEvents: [weeklyJoinEvent(1)],
+        });
+      }
+      if (pathname.endsWith('/weekly-message-sync-result-by-discord')) {
+        const body = (await request.json()) as { projectionHash: string };
+        return body.projectionHash === 'a'.repeat(64)
+          ? Response.json({
+              ok: true,
+              stale: true,
+              syncEvent: weeklyJoinEvent(1),
+            })
+          : Response.json({ ok: true, stale: false });
+      }
+      throw new Error(`Unexpected API Worker request: ${pathname}`);
+    }),
+    DISCORD_TOKEN: 'discord-token',
+  };
+
+  const dropPromise = handleDarkroomScheduleDropButton(
+    componentInteraction('darkroom_schedule_drop:slot-123'),
+    env,
+  );
+  await dropPatchReady;
+  const joinResponse = await handleDarkroomScheduleJoinSelect(
+    {
+      ...componentInteraction('darkroom_schedule_join'),
+      channel_id: weeklyChannelId,
+      data: {
+        component_type: MessageComponentTypes.STRING_SELECT,
+        custom_id: 'darkroom_schedule_join',
+        values: ['slot-123'],
+      },
+      message: { id: weeklyMessageId },
+    } as ComponentInteraction,
+    env,
+  );
+  releaseDropPatch?.();
+  const dropResponse = await dropPromise;
+
+  assert.equal(joinResponse.data?.content, 'Joined.');
+  assert.equal(dropResponse.data?.content, 'Dropped.');
+  assert.deepEqual(
+    completedCounts,
+    [1, 0, 1],
+    'the stale drop must trigger one bounded repair with the latest rejoin projection',
+  );
+});
+
+test('joining from a weekly menu cannot retarget tracked coordinates from the interaction source', async () => {
+  const sourceChannelId = '1512900016979837161';
+  const sourceMessageId = '888888888888888888';
+  const callbackBodies: unknown[] = [];
+  const unboundEvent = {
+    ...weeklyJoinEvent(1),
+    channelId: undefined,
+    messageId: undefined,
+  };
+
+  globalThis.fetch = async () => {
+    throw new Error('An unbound API projection must not target Discord.');
+  };
+
+  const env: Env = {
+    ...apiEnv(async (request) => {
+      const pathname = new URL(request.url).pathname;
+      if (pathname.endsWith('/join-by-discord')) {
+        return Response.json({
+          joined: true,
+          message: 'Joined.',
+          ok: true,
+          weeklyJoinMessageEvents: [unboundEvent],
+        });
+      }
+      if (pathname.endsWith('/weekly-message-sync-result-by-discord')) {
+        callbackBodies.push(await request.json());
+        return Response.json({ ok: true, stale: false });
+      }
+      throw new Error(`Unexpected API Worker request: ${pathname}`);
+    }),
+    DISCORD_TOKEN: 'discord-token',
+  };
+
+  const response = await handleDarkroomScheduleJoinSelect(
+    {
+      ...componentInteraction('darkroom_schedule_join'),
+      channel_id: sourceChannelId,
+      data: {
+        component_type: MessageComponentTypes.STRING_SELECT,
+        custom_id: 'darkroom_schedule_join',
+        values: ['slot-123'],
+      },
+      message: { id: sourceMessageId },
+    } as ComponentInteraction,
+    env,
+  );
+
+  assert.equal(
+    response.data?.content,
+    'Joined. Some Discord views may take a moment to catch up.',
+  );
+  assert.deepEqual(callbackBodies, []);
+});
+
 test('only long-running commands and darkroom components are selected for deferred handling', () => {
   for (const customId of [
     'darkroom_schedule_join',
@@ -534,5 +695,30 @@ function darkroomSyncEvent(syncRevision: number, registered: boolean) {
     syncRevision,
     title: 'Open Darkroom',
     type: 'website.darkroom.schedule.sync' as const,
+  };
+}
+
+function weeklyJoinEvent(registeredCount: number) {
+  return {
+    allowCreate: false,
+    channelId: '1512900016979837161',
+    messageId: '777777777777777777',
+    projectionHash: registeredCount === 0 ? 'a'.repeat(64) : 'b'.repeat(64),
+    projectionRevision: registeredCount === 0 ? 1 : 2,
+    slots: [
+      {
+        availableCapacity: 4 - registeredCount,
+        capacity: 4,
+        endsAt: '2099-07-21T14:00:00.000Z',
+        registeredCount,
+        slotId: 'slot-123',
+        startsAt: '2099-07-21T12:00:00.000Z',
+        title: 'Open Darkroom',
+      },
+    ],
+    type: 'website.darkroom.schedule.weekly_join_message' as const,
+    weeklyMessageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    windowEnd: '2099-07-27T04:00:00.000Z',
+    windowStart: '2099-07-20T04:00:00.000Z',
   };
 }
