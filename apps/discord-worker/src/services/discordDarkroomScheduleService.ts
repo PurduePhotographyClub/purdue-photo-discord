@@ -51,6 +51,11 @@ export const DARKROOM_SCHEDULE_JOIN_SELECT_CUSTOM_ID = 'darkroom_schedule_join';
 const DARKROOM_SCHEDULE_JOIN_CHANNEL_ID = '1512900016979837161';
 
 const logger = createLogger('darkroom-schedule');
+const STALE_DARKROOM_SYNC_MESSAGES = new Set([
+  'Darkroom Discord sync event is stale.',
+  'Darkroom schedule event is stale.',
+  'Discord private thread event is stale.',
+]);
 
 type DiscordChannel = DiscordManagedChannel;
 
@@ -1338,7 +1343,7 @@ function assertNewerDarkroomSyncEvent(
 function isStaleDarkroomSyncError(error: unknown) {
   return (
     error instanceof BadRequestError &&
-    error.message === 'Darkroom Discord sync event is stale.'
+    STALE_DARKROOM_SYNC_MESSAGES.has(error.message)
   );
 }
 

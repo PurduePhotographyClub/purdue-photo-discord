@@ -346,6 +346,39 @@ test('scan-discovered managed private threads require an explicit matching owner
   );
 });
 
+test('scan discovery recognizes a legacy darkroom marker during name migration', async () => {
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (
+      (init?.method ?? 'GET') === 'GET' &&
+      url.pathname === '/api/v10/guilds/guild-123/threads/active'
+    ) {
+      return Response.json({
+        threads: [
+          {
+            guild_id: 'guild-123',
+            id: 'legacy-darkroom-thread',
+            name: 'darkroom--pcc-darkroom-darkroom-slot-r2',
+            owner_id: 'application-123',
+            parent_id: DARKROOM_REQUESTS_CHANNEL_ID,
+            type: 12,
+          },
+        ],
+      });
+    }
+    throw new Error(`Unexpected Discord API call: ${url.pathname}`);
+  };
+
+  const thread = await findManagedPrivateThread(createEnv(), {
+    legacyMarkers: ['--pcc-darkroom-darkroom-slot'],
+    marker: '--dr-darkroomslot',
+    parentChannelId: DARKROOM_REQUESTS_CHANNEL_ID,
+    syncRevision: 3,
+  });
+
+  assert.equal(thread?.id, 'legacy-darkroom-thread');
+});
+
 test('terminal studio, darkroom, and equipment rooms are deleted instead of archived', async () => {
   const cases = [
     {

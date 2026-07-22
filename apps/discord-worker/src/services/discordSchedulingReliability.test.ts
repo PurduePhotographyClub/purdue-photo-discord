@@ -215,6 +215,10 @@ test('schedule threads verify strong ownership guards and reject explicit foreig
   assert.match(studio, /marker:\s*`--pcc-studio-\$\{event\.requestId\}`/);
   assert.match(
     darkroom,
+    /'Darkroom Discord sync event is stale\.'[\s\S]*'Darkroom schedule event is stale\.'[\s\S]*'Discord private thread event is stale\.'/,
+  );
+  assert.match(
+    darkroom,
     /parentChannelId:\s*DARKROOM_SCHEDULE_JOIN_CHANNEL_ID/,
   );
   assert.match(studio, /parentChannelId:\s*STUDIO_SCHEDULE_CHANNEL_ID/);
