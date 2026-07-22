@@ -111,6 +111,10 @@ export const DARKROOM_SCHEDULE_END_CUSTOM_ID_PREFIX = 'darkroom_schedule_end:';
 export const DARKROOM_SCHEDULE_CANCEL_CUSTOM_ID_PREFIX =
   'darkroom_schedule_cancel:';
 const DARKROOM_DISCORD_MUTATION_CONCURRENCY = 2;
+const DARKROOM_DISCORD_RETRY_OPTIONS = {
+  maxRetryDelayMs: 15_000,
+  maxRetries: 1,
+} as const;
 
 export function isDarkroomScheduleSessionActionCustomId(customId: string) {
   return (
@@ -335,8 +339,11 @@ export async function syncDarkroomScheduleChannel(
     allowArchived: shouldDeleteScheduleRoom(event),
   });
 
-  if (event.channelId) {
-    const room = await resolveDarkroomScheduleRoom(env, event.channelId, event);
+  const eventChannelId = event.channelId;
+  if (eventChannelId) {
+    const room = await retryDarkroomDiscordOperation(() =>
+      resolveDarkroomScheduleRoom(env, eventChannelId, event),
+    );
     if (!room) {
       syncEvent = { ...event, channelId: null, messageId: null };
     } else if (room.kind === 'thread') {
@@ -349,18 +356,15 @@ export async function syncDarkroomScheduleChannel(
   }
 
   if (!thread && !syncEvent.channelId) {
-    thread = await findManagedPrivateThread(
-      env,
-      getDarkroomThreadSpec(syncEvent),
+    thread = await retryDarkroomDiscordOperation(() =>
+      findManagedPrivateThread(env, getDarkroomThreadSpec(syncEvent)),
     );
   }
 
   if (!thread && !legacyChannelId && !syncEvent.channelId) {
     const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
-    const existingChannel = await findExistingScheduleChannel(
-      env,
-      guildId,
-      syncEvent,
+    const existingChannel = await retryDarkroomDiscordOperation(() =>
+      findExistingScheduleChannel(env, guildId, syncEvent),
     );
     if (existingChannel) {
       await assertLegacyDarkroomScheduleChannelOwnership(
@@ -376,7 +380,9 @@ export async function syncDarkroomScheduleChannel(
     await notifyDarkroomRegistrantsOfScheduleAction(env, syncEvent);
     const channelId = thread?.id ?? legacyChannelId;
     if (channelId) {
-      await deleteDiscordManagedChannel(env, channelId);
+      await retryDarkroomDiscordOperation(() =>
+        deleteDiscordManagedChannel(env, channelId),
+      );
     }
     return {
       channelId: null,
@@ -387,19 +393,24 @@ export async function syncDarkroomScheduleChannel(
   const threadSpec = getDarkroomThreadSpec(syncEvent);
   let didCreateThread = false;
   if (!thread) {
-    thread = await createManagedPrivateThread(
-      env,
-      buildScheduleChannelName(syncEvent),
-      threadSpec,
+    thread = await retryDarkroomDiscordOperation(() =>
+      createManagedPrivateThread(
+        env,
+        buildScheduleChannelName(syncEvent),
+        threadSpec,
+      ),
     );
     didCreateThread = true;
   } else {
-    thread = await prepareManagedPrivateThread(
-      env,
-      thread,
-      buildScheduleChannelName(syncEvent),
-      threadSpec,
-      { allowMissingOwner: threadAllowsMissingOwner },
+    const existingThread = thread;
+    thread = await retryDarkroomDiscordOperation(() =>
+      prepareManagedPrivateThread(
+        env,
+        existingThread,
+        buildScheduleChannelName(syncEvent),
+        threadSpec,
+        { allowMissingOwner: threadAllowsMissingOwner },
+      ),
     );
   }
 
@@ -407,7 +418,12 @@ export async function syncDarkroomScheduleChannel(
     if (didCreateThread) {
       await assertDarkroomScheduleSyncEventCurrent(env, syncEvent);
     }
-    await reconcileScheduleThreadMembers(env, thread.id, syncEvent);
+    // Finish access reconciliation before publishing the new roster. Each
+    // mutation owns its retry, so a message rate limit cannot replay member
+    // writes and a replacement message is never left untracked by a later
+    // member failure.
+    await reconcileScheduleThreadMembers(env, thread.id, syncEvent, 'remove');
+    await reconcileScheduleThreadMembers(env, thread.id, syncEvent, 'allow');
     const messageResult = syncEvent.messageId
       ? await editOrSendScheduleMessage(
           env,
@@ -415,10 +431,14 @@ export async function syncDarkroomScheduleChannel(
           syncEvent.messageId,
           syncEvent,
         )
-      : await sendScheduleMessage(env, thread.id, syncEvent);
+      : await retryDarkroomDiscordOperation(() =>
+          sendScheduleMessage(env, thread.id, syncEvent),
+        );
 
     if (legacyChannelId) {
-      await deleteDiscordManagedChannel(env, legacyChannelId);
+      await retryDarkroomDiscordOperation(() =>
+        deleteDiscordManagedChannel(env, legacyChannelId),
+      );
     }
 
     return {
@@ -428,7 +448,9 @@ export async function syncDarkroomScheduleChannel(
   } catch (error) {
     if (didCreateThread) {
       try {
-        await deleteDiscordManagedChannel(env, thread.id);
+        await retryDarkroomDiscordOperation(() =>
+          deleteDiscordManagedChannel(env, thread.id),
+        );
       } catch (rollbackError) {
         logger.warn('Failed to roll back a partial darkroom private thread.', {
           error: rollbackError,
@@ -550,6 +572,7 @@ async function reconcileScheduleThreadMembers(
   env: Env,
   threadId: string,
   event: DarkroomScheduleSyncInternalEvent,
+  action: 'allow' | 'remove',
 ) {
   const activeDiscordIds = new Set(
     isActiveScheduleChannel(event)
@@ -579,12 +602,14 @@ async function reconcileScheduleThreadMembers(
   ];
 
   await runWithConcurrency(
-    changes,
+    changes.filter((change) => change.action === action),
     DARKROOM_DISCORD_MUTATION_CONCURRENCY,
     (change) =>
-      change.action === 'allow'
-        ? addManagedPrivateThreadMember(env, threadId, change.discordId)
-        : removeManagedPrivateThreadMember(env, threadId, change.discordId),
+      retryDarkroomDiscordOperation(() =>
+        change.action === 'allow'
+          ? addManagedPrivateThreadMember(env, threadId, change.discordId)
+          : removeManagedPrivateThreadMember(env, threadId, change.discordId),
+      ),
   );
 }
 
@@ -630,14 +655,27 @@ async function editOrSendScheduleMessage(
   event: DarkroomScheduleSyncInternalEvent,
 ) {
   try {
-    return await editScheduleMessage(env, channelId, messageId, event);
+    return await retryDarkroomDiscordOperation(() =>
+      editScheduleMessage(env, channelId, messageId, event),
+    );
   } catch (error) {
     if (error instanceof DiscordApiError && error.status === 404) {
-      return sendScheduleMessage(env, channelId, event);
+      return retryDarkroomDiscordOperation(() =>
+        sendScheduleMessage(env, channelId, event),
+      );
     }
 
     throw error;
   }
+}
+
+function retryDarkroomDiscordOperation<Result>(
+  operation: () => Promise<Result>,
+) {
+  return retryDiscordRateLimitedOperation(
+    operation,
+    DARKROOM_DISCORD_RETRY_OPTIONS,
+  );
 }
 
 async function editOrSendWeeklyJoinMessage(
@@ -1244,21 +1282,16 @@ async function syncDarkroomInteractionState(
   },
 ) {
   // Component interactions have a short acknowledgement window. Keep these
-  // independent views concurrent; longer rate-limit waits are scoped to the
-  // authenticated internal scheduling route instead.
-  const retryOptions = { maxRetryDelayMs: 15_000, maxRetries: 1 } as const;
+  // independent views concurrent. The schedule projection scopes retries to
+  // individual Discord mutations so completed member or message writes are not
+  // replayed when a later mutation is rate-limited.
   const results = await Promise.allSettled([
     ...(input.syncEvent
-      ? [
-          retryDiscordRateLimitedOperation(
-            () => syncDarkroomScheduleAndPersist(env, input.syncEvent!),
-            retryOptions,
-          ),
-        ]
+      ? [syncDarkroomScheduleAndPersist(env, input.syncEvent)]
       : []),
     retryDiscordRateLimitedOperation(
       () => syncWeeklyJoinMessages(env, input.weeklyJoinMessageEvents),
-      retryOptions,
+      DARKROOM_DISCORD_RETRY_OPTIONS,
     ),
   ]);
   const failed = results.filter((result) => result.status === 'rejected');

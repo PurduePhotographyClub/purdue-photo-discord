@@ -430,6 +430,254 @@ test('a drop that is stale at preflight converges to the latest rejoin roster', 
   );
 });
 
+test('a rejoin retries only the rate-limited root message edit', async () => {
+  const memberMutations: string[] = [];
+  const mutationOrder: string[] = [];
+  const renderedCapacities: string[] = [];
+  let messagePatchCount = 0;
+  let persistenceCount = 0;
+  let threadName = 'darkroom--pcc-darkroom-slot-123-r2';
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+
+    if (
+      method === 'GET' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      return Response.json({
+        guild_id: 'guild-123',
+        id: 'darkroom-thread',
+        name: threadName,
+        parent_id: '1512900016979837161',
+        type: 12,
+      });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      threadName = (body as { name: string }).name;
+      return Response.json({ id: 'darkroom-thread' });
+    }
+    if (
+      method === 'PUT' &&
+      url.pathname ===
+        '/api/v10/channels/darkroom-thread/thread-members/member-123'
+    ) {
+      memberMutations.push(method);
+      mutationOrder.push('member');
+      return new Response(null, { status: 204 });
+    }
+    if (
+      method === 'PUT' &&
+      url.pathname ===
+        '/api/v10/channels/darkroom-thread/thread-members/manager-123'
+    ) {
+      return new Response(null, { status: 204 });
+    }
+    if (
+      method === 'DELETE' &&
+      url.pathname ===
+        '/api/v10/channels/darkroom-thread/thread-members/former-manager-123'
+    ) {
+      return new Response(null, { status: 204 });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname === '/api/v10/channels/darkroom-thread/messages/message-123'
+    ) {
+      messagePatchCount += 1;
+      mutationOrder.push('message');
+      const capacity = (
+        body as {
+          embeds?: Array<{ fields?: Array<{ name: string; value: string }> }>;
+        }
+      ).embeds?.[0]?.fields?.find((field) => field.name === 'Capacity')?.value;
+      if (capacity) renderedCapacities.push(capacity);
+      return messagePatchCount === 1
+        ? Response.json(
+            { retry_after: 0.75 },
+            { headers: { 'Retry-After': '0.75' }, status: 429 },
+          )
+        : Response.json({ id: 'message-123' });
+    }
+
+    throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
+  };
+
+  const response = await handleDarkroomScheduleJoinSelect(
+    {
+      ...componentInteraction('darkroom_schedule_join'),
+      data: {
+        component_type: MessageComponentTypes.STRING_SELECT,
+        custom_id: 'darkroom_schedule_join',
+        values: ['slot-123'],
+      },
+    } as ComponentInteraction,
+    {
+      API_WORKER: {
+        async fetch(request: Request) {
+          const url = new URL(request.url);
+          if (url.pathname.endsWith('/join-by-discord')) {
+            return Response.json({
+              joined: true,
+              message: 'Joined.',
+              ok: true,
+              syncEvent: darkroomSyncEvent(3, true),
+              weeklyJoinMessageEvents: [],
+            });
+          }
+          if (url.pathname.endsWith('/discord-sync-state')) {
+            return Response.json({
+              discordSyncStatus: 'pending',
+              status: 'open',
+              syncRevision: 3,
+            });
+          }
+          if (url.pathname.endsWith('/sync-result-by-discord')) {
+            persistenceCount += 1;
+            return Response.json({ ok: true, stale: false });
+          }
+          throw new Error(`Unexpected API Worker request: ${url.pathname}`);
+        },
+      } as unknown as Fetcher,
+      DISCORD_APPLICATION_ID: 'application-123',
+      DISCORD_GUILD_ID: 'guild-123',
+      DISCORD_TOKEN: 'discord-token',
+    },
+  );
+
+  assert.equal(response.data?.content, 'Joined.');
+  assert.deepEqual(memberMutations, ['PUT']);
+  assert.deepEqual(renderedCapacities, ['1/4', '1/4']);
+  assert.equal(messagePatchCount, 2);
+  assert.equal(persistenceCount, 1);
+  assert.equal(threadName.endsWith('-r3'), true);
+  assert.deepEqual(mutationOrder, ['member', 'message', 'message']);
+});
+
+test('a rejoin does not repost a missing root message while retrying member access', async () => {
+  let memberPutCount = 0;
+  let messagePostCount = 0;
+  let persistenceCount = 0;
+  let threadName = 'darkroom--pcc-darkroom-slot-123-r2';
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+
+    if (
+      method === 'GET' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      return Response.json({
+        guild_id: 'guild-123',
+        id: 'darkroom-thread',
+        name: threadName,
+        parent_id: '1512900016979837161',
+        type: 12,
+      });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      threadName = (body as { name: string }).name;
+      return Response.json({ id: 'darkroom-thread' });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname === '/api/v10/channels/darkroom-thread/messages/message-123'
+    ) {
+      return Response.json({ message: 'Unknown Message' }, { status: 404 });
+    }
+    if (
+      method === 'POST' &&
+      url.pathname === '/api/v10/channels/darkroom-thread/messages'
+    ) {
+      messagePostCount += 1;
+      return Response.json({ id: 'replacement-message' });
+    }
+    if (
+      method === 'PUT' &&
+      url.pathname ===
+        '/api/v10/channels/darkroom-thread/thread-members/member-123'
+    ) {
+      memberPutCount += 1;
+      return memberPutCount === 1
+        ? Response.json(
+            { retry_after: 0.501 },
+            { headers: { 'Retry-After': '0.501' }, status: 429 },
+          )
+        : new Response(null, { status: 204 });
+    }
+    if (
+      (method === 'PUT' &&
+        url.pathname ===
+          '/api/v10/channels/darkroom-thread/thread-members/manager-123') ||
+      (method === 'DELETE' &&
+        url.pathname ===
+          '/api/v10/channels/darkroom-thread/thread-members/former-manager-123')
+    ) {
+      return new Response(null, { status: 204 });
+    }
+
+    throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
+  };
+
+  const response = await handleDarkroomScheduleJoinSelect(
+    {
+      ...componentInteraction('darkroom_schedule_join'),
+      data: {
+        component_type: MessageComponentTypes.STRING_SELECT,
+        custom_id: 'darkroom_schedule_join',
+        values: ['slot-123'],
+      },
+    } as ComponentInteraction,
+    {
+      API_WORKER: {
+        async fetch(request: Request) {
+          const url = new URL(request.url);
+          if (url.pathname.endsWith('/join-by-discord')) {
+            return Response.json({
+              joined: true,
+              message: 'Joined.',
+              ok: true,
+              syncEvent: darkroomSyncEvent(3, true),
+              weeklyJoinMessageEvents: [],
+            });
+          }
+          if (url.pathname.endsWith('/discord-sync-state')) {
+            return Response.json({
+              discordSyncStatus: 'pending',
+              status: 'open',
+              syncRevision: 3,
+            });
+          }
+          if (url.pathname.endsWith('/sync-result-by-discord')) {
+            persistenceCount += 1;
+            return Response.json({ ok: true, stale: false });
+          }
+          throw new Error(`Unexpected API Worker request: ${url.pathname}`);
+        },
+      } as unknown as Fetcher,
+      DISCORD_APPLICATION_ID: 'application-123',
+      DISCORD_GUILD_ID: 'guild-123',
+      DISCORD_TOKEN: 'discord-token',
+    },
+  );
+
+  assert.equal(response.data?.content, 'Joined.');
+  assert.equal(messagePostCount, 1);
+  assert.equal(memberPutCount, 2);
+  assert.equal(persistenceCount, 1);
+  assert.equal(threadName.endsWith('-r3'), true);
+});
+
 test('an older weekly drop refresh cannot overwrite a newer rejoin refresh', async () => {
   const weeklyMessageId = '777777777777777777';
   const weeklyChannelId = '1512900016979837161';
