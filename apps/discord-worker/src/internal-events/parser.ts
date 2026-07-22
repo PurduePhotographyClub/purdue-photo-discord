@@ -349,6 +349,12 @@ function parseDarkroomWeeklyJoinMessageEvent(
   const channelId = readNullableString(payload, 'channelId');
   const messageId = readNullableString(payload, 'messageId');
   const allowCreate = readBoolean(payload, 'allowCreate');
+  const projectionHash = readString(payload, 'projectionHash');
+  const projectionRevision =
+    payload.projectionRevision === undefined
+      ? undefined
+      : readNonNegativeInteger(payload, 'projectionRevision');
+  const weeklyMessageId = readString(payload, 'weeklyMessageId');
 
   if (!windowStart || Number.isNaN(Date.parse(windowStart))) {
     throw new BadRequestError(
@@ -369,6 +375,29 @@ function parseDarkroomWeeklyJoinMessageEvent(
   }
   assertOptionalDiscordSnowflake(channelId, 'Darkroom weekly channelId');
   assertOptionalDiscordSnowflake(messageId, 'Darkroom weekly messageId');
+  if (projectionHash !== undefined && !/^[a-f0-9]{64}$/.test(projectionHash)) {
+    throw new BadRequestError(
+      'Darkroom weekly projectionHash must be a SHA-256 hex digest.',
+    );
+  }
+  if (payload.projectionRevision !== undefined && projectionRevision === null) {
+    throw new BadRequestError(
+      'Darkroom weekly projectionRevision must be a non-negative integer.',
+    );
+  }
+  if (weeklyMessageId !== undefined && !isUuid(weeklyMessageId)) {
+    throw new BadRequestError(
+      'Darkroom weekly weeklyMessageId must be a UUID.',
+    );
+  }
+  if (
+    weeklyMessageId !== undefined &&
+    (projectionHash === undefined || projectionRevision === undefined)
+  ) {
+    throw new BadRequestError(
+      'Tracked darkroom weekly messages require a projection hash and revision.',
+    );
+  }
 
   return {
     slots,
@@ -378,7 +407,10 @@ function parseDarkroomWeeklyJoinMessageEvent(
     ...(allowCreate !== undefined ? { allowCreate } : {}),
     ...(channelId !== undefined ? { channelId } : {}),
     ...(messageId !== undefined ? { messageId } : {}),
+    ...(projectionHash !== undefined ? { projectionHash } : {}),
+    ...(typeof projectionRevision === 'number' ? { projectionRevision } : {}),
     ...(truncated !== undefined ? { truncated } : {}),
+    ...(weeklyMessageId !== undefined ? { weeklyMessageId } : {}),
   };
 }
 

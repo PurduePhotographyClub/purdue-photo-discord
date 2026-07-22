@@ -106,9 +106,12 @@ export interface DarkroomScheduleWeeklyJoinMessageInternalEvent {
   allowCreate?: boolean;
   channelId?: string | null;
   messageId?: string | null;
+  projectionHash?: string;
+  projectionRevision?: number;
   slots: DarkroomScheduleWeeklyJoinSlot[];
   truncated?: boolean;
   type: 'website.darkroom.schedule.weekly_join_message';
+  weeklyMessageId?: string;
   windowEnd: string;
   windowStart: string;
 }

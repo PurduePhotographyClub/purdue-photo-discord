@@ -9,6 +9,7 @@ import {
 } from '../discord/api';
 import type { Env } from '../discord/types';
 import { handleInternalEventsRoute } from '../routes/internalEvents';
+import { postDarkroomWeeklyJoinMessage } from './discordDarkroomScheduleService';
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const readSource = async (relativePath: string) =>
@@ -220,6 +221,8 @@ test('darkroom interaction synchronization settles channel and weekly work indep
   assert.match(source, /weeklyJoinMessageEvents/);
   assert.match(source, /weekly refresh is missing its message ID/);
   assert.match(source, /deleted:\s*event\.deleteChannel === true/);
+  assert.match(source, /retryDiscordRateLimitedOperation/);
+  assert.match(source, /maxRetryDelayMs:\s*15_000/);
 });
 
 test('darkroom membership and notification fan-out uses bounded concurrency', async () => {
@@ -242,6 +245,57 @@ test('stale weekly messages are reported and existing schedule markers advance',
   assert.match(dispatcher, /ok:\s*result\.ok/);
   assert.match(studio, /prepareManagedPrivateThread/);
   assert.match(privateThreads, /storedRevision > spec\.syncRevision/);
+});
+
+test('automatic weekly refreshes never create a replacement after a Discord 404', async () => {
+  const originalFetch = globalThis.fetch;
+  const methods: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    methods.push(init?.method ?? 'GET');
+    return Response.json({ message: 'Unknown Message' }, { status: 404 });
+  };
+
+  try {
+    const result = await postDarkroomWeeklyJoinMessage(
+      { DISCORD_TOKEN: 'test-token' },
+      weeklyJoinEvent(),
+      { allowCreate: false },
+    );
+    assert.deepEqual(result, {
+      channelId: '1512900016979837161',
+      messageId: null,
+      ok: false,
+      stale: true,
+    });
+    assert.deepEqual(methods, ['PATCH']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('explicit weekly posting may replace a missing tracked message exactly once', async () => {
+  const originalFetch = globalThis.fetch;
+  const methods: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const method = init?.method ?? 'GET';
+    methods.push(method);
+    return method === 'PATCH'
+      ? Response.json({ message: 'Unknown Message' }, { status: 404 })
+      : Response.json({ id: '888888888888888888' });
+  };
+
+  try {
+    const result = await postDarkroomWeeklyJoinMessage(
+      { DISCORD_TOKEN: 'test-token' },
+      weeklyJoinEvent(),
+      { allowCreate: true },
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.messageId, '888888888888888888');
+    assert.deepEqual(methods, ['PATCH', 'POST']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('Discord retry-after values are treated as seconds without a millisecond heuristic', async () => {
@@ -353,6 +407,31 @@ test('darkroom resync retries a recoverable Discord 429 from the Retry-After hea
     globalThis.fetch = originalFetch;
   }
 });
+
+function weeklyJoinEvent() {
+  return {
+    allowCreate: false,
+    channelId: '1512900016979837161',
+    messageId: '777777777777777777',
+    projectionHash: 'a'.repeat(64),
+    projectionRevision: 0,
+    slots: [
+      {
+        availableCapacity: 3,
+        capacity: 4,
+        endsAt: '2099-07-21T14:00:00.000Z',
+        registeredCount: 1,
+        slotId: '11111111-1111-4111-8111-111111111111',
+        startsAt: '2099-07-21T12:00:00.000Z',
+        title: 'Open Darkroom',
+      },
+    ],
+    type: 'website.darkroom.schedule.weekly_join_message' as const,
+    weeklyMessageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    windowEnd: '2099-07-27T04:00:00.000Z',
+    windowStart: '2099-07-20T04:00:00.000Z',
+  };
+}
 
 async function createSignedInternalEventRequest(body: string) {
   const method = 'POST';

@@ -1,4 +1,7 @@
-import { discordApiRequest } from '../discord/api';
+import {
+  discordApiRequest,
+  retryDiscordRateLimitedOperation,
+} from '../discord/api';
 import { ephemeralResponse } from '../discord/responses';
 import type {
   ComponentInteraction,
@@ -85,6 +88,12 @@ interface DiscordScheduleSyncResultResponse {
   syncEvent?: DarkroomScheduleSyncInternalEvent;
 }
 
+interface DiscordWeeklyJoinSyncResultResponse {
+  ok: true;
+  stale: boolean;
+  syncEvent?: DarkroomScheduleWeeklyJoinMessageInternalEvent;
+}
+
 export function isDarkroomScheduleDropCustomId(customId: string) {
   return customId.startsWith(DARKROOM_SCHEDULE_DROP_CUSTOM_ID_PREFIX);
 }
@@ -134,6 +143,62 @@ export async function postDarkroomWeeklyJoinMessage(
     ok: result !== null,
     stale: result === null && !!event.messageId,
   };
+}
+
+export async function syncDarkroomWeeklyJoinMessageAndPersist(
+  env: Env,
+  event: DarkroomScheduleWeeklyJoinMessageInternalEvent,
+  options: { allowCreate?: boolean; maxRepairs?: number } = {},
+) {
+  const maxRepairs = Math.max(0, Math.min(options.maxRepairs ?? 1, 2));
+  let currentEvent = event;
+  let result = await postDarkroomWeeklyJoinMessage(env, currentEvent, {
+    allowCreate: options.allowCreate === true,
+  });
+
+  for (let repairCount = 0; ; repairCount += 1) {
+    if (
+      result.ok !== true ||
+      !result.channelId ||
+      !result.messageId ||
+      !currentEvent.weeklyMessageId ||
+      !currentEvent.projectionHash ||
+      currentEvent.projectionRevision === undefined
+    ) {
+      return result;
+    }
+
+    const persisted = await persistDarkroomWeeklyJoinMessageResult(
+      env,
+      currentEvent,
+      { channelId: result.channelId, messageId: result.messageId },
+    );
+    if (!persisted.stale) {
+      return result;
+    }
+    if (repairCount >= maxRepairs || !persisted.syncEvent) {
+      logger.warn('Darkroom weekly message convergence remained stale.', {
+        projectionHash: currentEvent.projectionHash,
+        weeklyMessageId: currentEvent.weeklyMessageId,
+      });
+      return { ...result, ok: false, stale: true };
+    }
+    if (
+      persisted.syncEvent.weeklyMessageId !== currentEvent.weeklyMessageId ||
+      !persisted.syncEvent.projectionHash ||
+      persisted.syncEvent.projectionRevision === undefined ||
+      persisted.syncEvent.projectionRevision <= currentEvent.projectionRevision
+    ) {
+      throw new BadRequestError(
+        'Website API returned an invalid darkroom weekly convergence event.',
+      );
+    }
+
+    currentEvent = persisted.syncEvent;
+    result = await postDarkroomWeeklyJoinMessage(env, currentEvent, {
+      allowCreate: false,
+    });
+  }
 }
 
 export async function handleDarkroomScheduleDropButton(
@@ -238,10 +303,7 @@ export async function handleDarkroomScheduleJoinSelect(
 
   const syncWarning = await syncDarkroomInteractionState(env, {
     syncEvent: joinResponse.syncEvent,
-    weeklyJoinMessageEvents: bindWeeklyJoinEventsToInteractionMessage(
-      joinResponse.weeklyJoinMessageEvents,
-      interaction,
-    ),
+    weeklyJoinMessageEvents: joinResponse.weeklyJoinMessageEvents,
   });
 
   return ephemeralResponse(
@@ -1149,7 +1211,7 @@ async function syncWeeklyJoinMessages(
         );
       }
 
-      return postDarkroomWeeklyJoinMessage(env, event, {
+      return syncDarkroomWeeklyJoinMessageAndPersist(env, event, {
         allowCreate: false,
       });
     }),
@@ -1173,11 +1235,20 @@ async function syncDarkroomInteractionState(
   // Component interactions have a short acknowledgement window. Keep these
   // independent views concurrent; longer rate-limit waits are scoped to the
   // authenticated internal scheduling route instead.
+  const retryOptions = { maxRetryDelayMs: 15_000, maxRetries: 1 } as const;
   const results = await Promise.allSettled([
     ...(input.syncEvent
-      ? [syncDarkroomScheduleAndPersist(env, input.syncEvent)]
+      ? [
+          retryDiscordRateLimitedOperation(
+            () => syncDarkroomScheduleAndPersist(env, input.syncEvent!),
+            retryOptions,
+          ),
+        ]
       : []),
-    syncWeeklyJoinMessages(env, input.weeklyJoinMessageEvents),
+    retryDiscordRateLimitedOperation(
+      () => syncWeeklyJoinMessages(env, input.weeklyJoinMessageEvents),
+      retryOptions,
+    ),
   ]);
   const failed = results.filter((result) => result.status === 'rejected');
   if (failed.length === 0) return false;
@@ -1268,37 +1339,48 @@ async function persistDarkroomScheduleSyncResult(
   };
 }
 
+async function persistDarkroomWeeklyJoinMessageResult(
+  env: Env,
+  event: DarkroomScheduleWeeklyJoinMessageInternalEvent,
+  result: { channelId: string; messageId: string },
+): Promise<DiscordWeeklyJoinSyncResultResponse> {
+  const response = await requestWebsiteApi(
+    env,
+    '/darkroom/schedule/weekly-message-sync-result-by-discord',
+    {
+      body: {
+        channelId: result.channelId,
+        messageId: result.messageId,
+        projectionHash: event.projectionHash,
+        projectionRevision: event.projectionRevision,
+        weeklyMessageId: event.weeklyMessageId,
+      },
+      method: 'POST',
+    },
+  );
+  if (
+    !isRecord(response) ||
+    response.ok !== true ||
+    typeof response.stale !== 'boolean'
+  ) {
+    throw new BadRequestError(
+      'Website API returned an invalid darkroom weekly sync result.',
+    );
+  }
+
+  return {
+    ok: true,
+    stale: response.stale,
+    ...(isDarkroomWeeklyJoinMessageEvent(response.syncEvent)
+      ? { syncEvent: response.syncEvent }
+      : {}),
+  };
+}
+
 function appendDarkroomSyncWarning(message: string, hasWarning: boolean) {
   return hasWarning
     ? `${message} Some Discord views may take a moment to catch up.`
     : message;
-}
-
-function bindWeeklyJoinEventsToInteractionMessage(
-  events: DarkroomScheduleWeeklyJoinMessageInternalEvent[] | undefined,
-  interaction: ComponentInteraction,
-): DarkroomScheduleWeeklyJoinMessageInternalEvent[] | undefined {
-  const sourceMessageId = interaction.message?.id;
-  if (!sourceMessageId || !events || events.length === 0) {
-    return events;
-  }
-
-  const sourceChannelId = interaction.channel_id;
-  const sourceEvent =
-    events.find((event) => event.messageId === sourceMessageId) ??
-    events.find(
-      (event) => sourceChannelId && event.channelId === sourceChannelId,
-    ) ??
-    (events.length === 1 ? events[0] : undefined);
-  if (!sourceEvent) return events;
-
-  const boundEvent: DarkroomScheduleWeeklyJoinMessageInternalEvent = {
-    ...sourceEvent,
-    ...(sourceChannelId ? { channelId: sourceChannelId } : {}),
-    messageId: sourceMessageId,
-  };
-
-  return events.map((event) => (event === sourceEvent ? boundEvent : event));
 }
 
 function readWeeklyJoinMessageEvents(
@@ -1345,7 +1427,22 @@ function isDarkroomWeeklyJoinMessageEvent(
     value.type === 'website.darkroom.schedule.weekly_join_message' &&
     typeof value.windowStart === 'string' &&
     typeof value.windowEnd === 'string' &&
-    Array.isArray(value.slots)
+    Array.isArray(value.slots) &&
+    (value.projectionHash === undefined ||
+      (typeof value.projectionHash === 'string' &&
+        /^[a-f0-9]{64}$/.test(value.projectionHash))) &&
+    (value.projectionRevision === undefined ||
+      (typeof value.projectionRevision === 'number' &&
+        Number.isSafeInteger(value.projectionRevision) &&
+        value.projectionRevision >= 0)) &&
+    (value.weeklyMessageId === undefined ||
+      (typeof value.weeklyMessageId === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          value.weeklyMessageId,
+        ))) &&
+    (value.weeklyMessageId === undefined ||
+      (value.projectionHash !== undefined &&
+        value.projectionRevision !== undefined))
   );
 }
 
