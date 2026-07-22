@@ -51,6 +51,11 @@ export const DARKROOM_SCHEDULE_JOIN_SELECT_CUSTOM_ID = 'darkroom_schedule_join';
 const DARKROOM_SCHEDULE_JOIN_CHANNEL_ID = '1512900016979837161';
 
 const logger = createLogger('darkroom-schedule');
+const STALE_DARKROOM_SYNC_MESSAGES = new Set([
+  'Darkroom Discord sync event is stale.',
+  'Darkroom schedule event is stale.',
+  'Discord private thread event is stale.',
+]);
 
 type DiscordChannel = DiscordManagedChannel;
 
@@ -1024,19 +1029,25 @@ function buildScheduleChannelName(event: DarkroomScheduleSyncInternalEvent) {
     .replace(/\s/g, '');
   const prefix = getScheduleChannelPrefix(event);
 
-  return sanitizeChannelName(
-    `${prefix}-${weekday}-${month}-${day}-${hour}-${event.title}`,
-  );
+  return sanitizeChannelName(`${prefix}-${weekday}-${month}-${day}-${hour}`);
 }
 
 function getDarkroomThreadSpec(
   event: DarkroomScheduleSyncInternalEvent,
 ): ManagedPrivateThreadSpec {
   return {
-    marker: `--pcc-darkroom-${event.slotId}`,
+    legacyMarkers: [`--pcc-darkroom-${event.slotId}`],
+    marker: `--dr-${buildCompactSlotMarker(event.slotId)}`,
     parentChannelId: DARKROOM_SCHEDULE_JOIN_CHANNEL_ID,
     syncRevision: event.syncRevision,
   };
+}
+
+function buildCompactSlotMarker(slotId: string) {
+  const normalized = slotId.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return normalized.length <= 16
+    ? normalized
+    : `${normalized.slice(0, 8)}${normalized.slice(-8)}`;
 }
 
 function buildScheduleTopic(event: DarkroomScheduleSyncInternalEvent) {
@@ -1266,26 +1277,40 @@ async function syncDarkroomScheduleAndPersist(
   env: Env,
   event: DarkroomScheduleSyncInternalEvent,
 ) {
-  const result = await syncDarkroomScheduleChannel(env, event);
+  let result: { channelId: string | null; messageId: string | null };
+  try {
+    result = await syncDarkroomScheduleChannel(env, event);
+  } catch (error) {
+    if (!isStaleDarkroomSyncError(error)) throw error;
+
+    const recovered = await persistDarkroomScheduleSyncResult(env, event, {
+      channelId: event.channelId ?? null,
+      messageId: event.messageId ?? null,
+    });
+    if (!recovered.stale || !recovered.syncEvent) throw error;
+    assertNewerDarkroomSyncEvent(event, recovered.syncEvent);
+    return repairDarkroomScheduleSync(env, recovered.syncEvent);
+  }
+
   const persisted = await persistDarkroomScheduleSyncResult(env, event, result);
   const latestEvent = persisted.syncEvent;
   if (!persisted.stale || !latestEvent) {
     return result;
   }
 
-  if (
-    latestEvent.slotId !== event.slotId ||
-    latestEvent.syncRevision <= event.syncRevision
-  ) {
-    throw new BadRequestError(
-      'Website API returned an invalid darkroom convergence event.',
-    );
-  }
+  assertNewerDarkroomSyncEvent(event, latestEvent);
 
   // A drop can commit just before a rejoin increments the revision. If the old
   // Discord mutation wins the race, repair exactly once from the API-authored
   // latest event so the member list converges without an unbounded callback
   // loop.
+  return repairDarkroomScheduleSync(env, latestEvent);
+}
+
+async function repairDarkroomScheduleSync(
+  env: Env,
+  latestEvent: DarkroomScheduleSyncInternalEvent,
+) {
   const repaired = await syncDarkroomScheduleChannel(env, latestEvent);
   const repairedPersistence = await persistDarkroomScheduleSyncResult(
     env,
@@ -1299,6 +1324,27 @@ async function syncDarkroomScheduleAndPersist(
     });
   }
   return repaired;
+}
+
+function assertNewerDarkroomSyncEvent(
+  previousEvent: DarkroomScheduleSyncInternalEvent,
+  latestEvent: DarkroomScheduleSyncInternalEvent,
+) {
+  if (
+    latestEvent.slotId !== previousEvent.slotId ||
+    latestEvent.syncRevision <= previousEvent.syncRevision
+  ) {
+    throw new BadRequestError(
+      'Website API returned an invalid darkroom convergence event.',
+    );
+  }
+}
+
+function isStaleDarkroomSyncError(error: unknown) {
+  return (
+    error instanceof BadRequestError &&
+    STALE_DARKROOM_SYNC_MESSAGES.has(error.message)
+  );
 }
 
 async function persistDarkroomScheduleSyncResult(

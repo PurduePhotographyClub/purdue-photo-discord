@@ -202,10 +202,21 @@ test('schedule threads verify strong ownership guards and reject explicit foreig
   assert.match(privateThreads, /type:\s*DISCORD_PRIVATE_THREAD_TYPE/);
   assert.match(darkroom, /assertLegacyDarkroomScheduleChannelOwnership/);
   assert.match(studio, /assertLegacyStudioScheduleChannelOwnership/);
-  assert.match(darkroom, /marker:\s*`--pcc-darkroom-\$\{event\.slotId\}`/);
+  assert.match(
+    darkroom,
+    /legacyMarkers:\s*\[`--pcc-darkroom-\$\{event\.slotId\}`\]/,
+  );
+  assert.match(
+    darkroom,
+    /marker:\s*`--dr-\$\{buildCompactSlotMarker\(event\.slotId\)\}`/,
+  );
   assert.match(equipment, /marker:\s*`--pcc-equipment-\$\{event\.loanId\}`/);
   assert.match(equipment, /syncRevision:\s*event\.syncRevision/);
   assert.match(studio, /marker:\s*`--pcc-studio-\$\{event\.requestId\}`/);
+  assert.match(
+    darkroom,
+    /'Darkroom Discord sync event is stale\.'[\s\S]*'Darkroom schedule event is stale\.'[\s\S]*'Discord private thread event is stale\.'/,
+  );
   assert.match(
     darkroom,
     /parentChannelId:\s*DARKROOM_SCHEDULE_JOIN_CHANNEL_ID/,

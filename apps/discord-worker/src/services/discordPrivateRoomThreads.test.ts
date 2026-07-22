@@ -105,6 +105,16 @@ test('darkroom rooms reconcile participant additions and removals through thread
     'darkroom-thread',
     'invited-executive',
   );
+  const threadCreation = requests.find(
+    ({ method, pathname }) =>
+      method === 'POST' &&
+      pathname === `/api/v10/channels/${DARKROOM_REQUESTS_CHANNEL_ID}/threads`,
+  );
+  const threadName = (threadCreation?.body as { name?: string } | undefined)
+    ?.name;
+  assert.equal(threadName, 'darkroom-tue-jul-21-8am--dr-darkroomslot-r1');
+  assert.ok((threadName?.length ?? 101) <= 50);
+  assert.doesNotMatch(threadName ?? '', /pcc-darkroom|11111111-1111-/);
   const rootMessage = requests.find(
     ({ method, pathname }) =>
       method === 'POST' &&
@@ -334,6 +344,39 @@ test('scan-discovered managed private threads require an explicit matching owner
       }),
     /ownership mismatch/,
   );
+});
+
+test('scan discovery recognizes a legacy darkroom marker during name migration', async () => {
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (
+      (init?.method ?? 'GET') === 'GET' &&
+      url.pathname === '/api/v10/guilds/guild-123/threads/active'
+    ) {
+      return Response.json({
+        threads: [
+          {
+            guild_id: 'guild-123',
+            id: 'legacy-darkroom-thread',
+            name: 'darkroom--pcc-darkroom-darkroom-slot-r2',
+            owner_id: 'application-123',
+            parent_id: DARKROOM_REQUESTS_CHANNEL_ID,
+            type: 12,
+          },
+        ],
+      });
+    }
+    throw new Error(`Unexpected Discord API call: ${url.pathname}`);
+  };
+
+  const thread = await findManagedPrivateThread(createEnv(), {
+    legacyMarkers: ['--pcc-darkroom-darkroom-slot'],
+    marker: '--dr-darkroomslot',
+    parentChannelId: DARKROOM_REQUESTS_CHANNEL_ID,
+    syncRevision: 3,
+  });
+
+  assert.equal(thread?.id, 'legacy-darkroom-thread');
 });
 
 test('terminal studio, darkroom, and equipment rooms are deleted instead of archived', async () => {
