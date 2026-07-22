@@ -418,22 +418,39 @@ export async function syncDarkroomScheduleChannel(
     if (didCreateThread) {
       await assertDarkroomScheduleSyncEventCurrent(env, syncEvent);
     }
-    // Finish access reconciliation before publishing the new roster. Each
-    // mutation owns its retry, so a message rate limit cannot replay member
-    // writes and a replacement message is never left untracked by a later
-    // member failure.
-    await reconcileScheduleThreadMembers(env, thread.id, syncEvent, 'remove');
-    await reconcileScheduleThreadMembers(env, thread.id, syncEvent, 'allow');
-    const messageResult = syncEvent.messageId
-      ? await editOrSendScheduleMessage(
-          env,
-          thread.id,
-          syncEvent.messageId,
-          syncEvent,
-        )
-      : await retryDarkroomDiscordOperation(() =>
-          sendScheduleMessage(env, thread.id, syncEvent),
-        );
+    // Revoke former managers and grant current access before publishing. A
+    // dropped registrant keeps access just long enough to receive the existing
+    // roster edit, then loses thread access immediately afterward.
+    await prepareScheduleThreadMembersForRoster(env, thread.id, syncEvent);
+
+    let messageResult: unknown;
+    if (syncEvent.messageId) {
+      messageResult = await editOrSendScheduleMessage(
+        env,
+        thread.id,
+        syncEvent.messageId,
+        syncEvent,
+        () =>
+          reconcileScheduleThreadMembers(
+            env,
+            thread.id,
+            syncEvent,
+            'removeRegistrants',
+          ),
+      );
+    } else {
+      // With no tracked message to edit, remove stale access before posting a
+      // new root message so a later removal failure cannot orphan its ID.
+      await reconcileScheduleThreadMembers(
+        env,
+        thread.id,
+        syncEvent,
+        'removeRegistrants',
+      );
+      messageResult = await retryDarkroomDiscordOperation(() =>
+        sendScheduleMessage(env, thread.id, syncEvent),
+      );
+    }
 
     if (legacyChannelId) {
       await retryDarkroomDiscordOperation(() =>
@@ -572,7 +589,7 @@ async function reconcileScheduleThreadMembers(
   env: Env,
   threadId: string,
   event: DarkroomScheduleSyncInternalEvent,
-  action: 'allow' | 'remove',
+  phase: 'allow' | 'removeManagers' | 'removeRegistrants',
 ) {
   const activeDiscordIds = new Set(
     isActiveScheduleChannel(event)
@@ -582,27 +599,39 @@ async function reconcileScheduleThreadMembers(
         ]
       : [],
   );
-  const idsToRemove = [
+  const managerIdsToRemove = unique(event.removeManagerDiscordIds ?? []).filter(
+    (discordId) => !activeDiscordIds.has(discordId),
+  );
+  const managerRemovalSet = new Set(managerIdsToRemove);
+  const registrantIdsToRemove = unique([
     ...(event.removeDiscordIds ?? []),
-    ...(event.removeManagerDiscordIds ?? []),
     ...(!isActiveScheduleChannel(event)
       ? event.registrants.map((registrant) => registrant.discordId)
       : []),
-  ].filter((discordId) => !activeDiscordIds.has(discordId));
+  ]).filter(
+    (discordId) =>
+      !activeDiscordIds.has(discordId) && !managerRemovalSet.has(discordId),
+  );
 
-  const changes = [
-    ...[...activeDiscordIds].map((discordId) => ({
-      action: 'allow' as const,
-      discordId,
-    })),
-    ...unique(idsToRemove).map((discordId) => ({
-      action: 'remove' as const,
-      discordId,
-    })),
-  ];
+  const changes: Array<{
+    action: 'allow' | 'remove';
+    discordId: string;
+  }> =
+    phase === 'allow'
+      ? [...activeDiscordIds].map((discordId) => ({
+          action: 'allow' as const,
+          discordId,
+        }))
+      : (phase === 'removeManagers'
+          ? managerIdsToRemove
+          : registrantIdsToRemove
+        ).map((discordId) => ({
+          action: 'remove' as const,
+          discordId,
+        }));
 
   await runWithConcurrency(
-    changes.filter((change) => change.action === action),
+    changes,
     DARKROOM_DISCORD_MUTATION_CONCURRENCY,
     (change) =>
       retryDarkroomDiscordOperation(() =>
@@ -611,6 +640,30 @@ async function reconcileScheduleThreadMembers(
           : removeManagedPrivateThreadMember(env, threadId, change.discordId),
       ),
   );
+}
+
+async function prepareScheduleThreadMembersForRoster(
+  env: Env,
+  threadId: string,
+  event: DarkroomScheduleSyncInternalEvent,
+) {
+  try {
+    await reconcileScheduleThreadMembers(
+      env,
+      threadId,
+      event,
+      'removeManagers',
+    );
+    await reconcileScheduleThreadMembers(env, threadId, event, 'allow');
+  } catch (error) {
+    await reconcileScheduleThreadMembers(
+      env,
+      threadId,
+      event,
+      'removeRegistrants',
+    );
+    throw error;
+  }
 }
 
 async function sendScheduleMessage(
@@ -653,16 +706,44 @@ async function editOrSendScheduleMessage(
   channelId: string,
   messageId: string,
   event: DarkroomScheduleSyncInternalEvent,
+  removeRegistrants: () => Promise<void>,
+) {
+  const editResult = await editScheduleMessageIfPresent(
+    env,
+    channelId,
+    messageId,
+    event,
+  ).catch(async (error: unknown) => {
+    await removeRegistrants();
+    throw error;
+  });
+
+  await removeRegistrants();
+  if (editResult.found) {
+    return editResult.message;
+  }
+
+  return retryDarkroomDiscordOperation(() =>
+    sendScheduleMessage(env, channelId, event),
+  );
+}
+
+async function editScheduleMessageIfPresent(
+  env: Env,
+  channelId: string,
+  messageId: string,
+  event: DarkroomScheduleSyncInternalEvent,
 ) {
   try {
-    return await retryDarkroomDiscordOperation(() =>
-      editScheduleMessage(env, channelId, messageId, event),
-    );
+    return {
+      found: true as const,
+      message: await retryDarkroomDiscordOperation(() =>
+        editScheduleMessage(env, channelId, messageId, event),
+      ),
+    };
   } catch (error) {
     if (error instanceof DiscordApiError && error.status === 404) {
-      return retryDarkroomDiscordOperation(() =>
-        sendScheduleMessage(env, channelId, event),
-      );
+      return { found: false as const };
     }
 
     throw error;

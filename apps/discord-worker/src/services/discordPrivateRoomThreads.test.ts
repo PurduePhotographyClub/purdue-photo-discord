@@ -291,6 +291,19 @@ test('darkroom join, drop, and rejoin reuse a strongly matched thread when Disco
       .map(({ method }) => method),
     ['PUT', 'DELETE', 'PUT'],
   );
+  const rootMessagePatchIndexes = requests.flatMap(
+    ({ method, pathname }, index) =>
+      method === 'PATCH' && pathname.endsWith('/messages/darkroom-message')
+        ? [index]
+        : [],
+  );
+  const droppedMemberIndex = requests.findIndex(
+    ({ method, pathname }) =>
+      method === 'DELETE' &&
+      pathname.endsWith('/thread-members/darkroom-member'),
+  );
+  assert.equal(rootMessagePatchIndexes.length, 3);
+  assert.ok(rootMessagePatchIndexes[1]! < droppedMemberIndex);
   assert.equal(
     requests.some(
       ({ method, pathname }) =>
@@ -298,6 +311,163 @@ test('darkroom join, drop, and rejoin reuse a strongly matched thread when Disco
     ),
     false,
   );
+});
+
+test('darkroom drops still revoke thread access when the roster edit fails', async () => {
+  const requests: RecordedRequest[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ body, method, pathname: url.pathname });
+
+    if (
+      method === 'GET' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      return Response.json({
+        guild_id: 'guild-123',
+        id: 'darkroom-thread',
+        name: 'darkroom--pcc-darkroom-darkroom-slot-r1',
+        parent_id: DARKROOM_REQUESTS_CHANNEL_ID,
+        type: 12,
+      });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      return Response.json({ id: 'darkroom-thread' });
+    }
+    if (
+      (method === 'PUT' || method === 'DELETE') &&
+      url.pathname.startsWith(
+        '/api/v10/channels/darkroom-thread/thread-members/',
+      )
+    ) {
+      return new Response(null, { status: 204 });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname ===
+        '/api/v10/channels/darkroom-thread/messages/darkroom-message'
+    ) {
+      return Response.json({ message: 'Discord unavailable' }, { status: 500 });
+    }
+
+    throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
+  };
+
+  await assert.rejects(
+    syncDarkroomScheduleChannel(
+      createEnv(undefined, {
+        darkroom: [
+          { discordSyncStatus: 'pending', status: 'open', syncRevision: 2 },
+        ],
+      }),
+      {
+        ...darkroomEvent(),
+        channelId: 'darkroom-thread',
+        managerDiscordIds: ['darkroom-manager'],
+        messageId: 'darkroom-message',
+        registeredCount: 0,
+        registrants: [],
+        removeDiscordIds: ['darkroom-member'],
+        syncRevision: 2,
+      },
+    ),
+    /Discord API request failed with 500/,
+  );
+
+  const messagePatchIndex = requests.findIndex(
+    ({ method, pathname }) =>
+      method === 'PATCH' && pathname.endsWith('/messages/darkroom-message'),
+  );
+  const droppedMemberIndex = requests.findIndex(
+    ({ method, pathname }) =>
+      method === 'DELETE' &&
+      pathname.endsWith('/thread-members/darkroom-member'),
+  );
+  assert.ok(messagePatchIndex >= 0);
+  assert.ok(droppedMemberIndex > messagePatchIndex);
+});
+
+test('darkroom drops still revoke thread access when granting current access fails', async () => {
+  const requests: RecordedRequest[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ body, method, pathname: url.pathname });
+
+    if (
+      method === 'GET' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      return Response.json({
+        guild_id: 'guild-123',
+        id: 'darkroom-thread',
+        name: 'darkroom--pcc-darkroom-darkroom-slot-r1',
+        parent_id: DARKROOM_REQUESTS_CHANNEL_ID,
+        type: 12,
+      });
+    }
+    if (
+      method === 'PATCH' &&
+      url.pathname === '/api/v10/channels/darkroom-thread'
+    ) {
+      return Response.json({ id: 'darkroom-thread' });
+    }
+    if (
+      method === 'PUT' &&
+      url.pathname.endsWith('/thread-members/darkroom-manager')
+    ) {
+      return Response.json({ message: 'Discord unavailable' }, { status: 500 });
+    }
+    if (
+      method === 'DELETE' &&
+      url.pathname.startsWith(
+        '/api/v10/channels/darkroom-thread/thread-members/',
+      )
+    ) {
+      return new Response(null, { status: 204 });
+    }
+
+    throw new Error(`Unexpected Discord API call: ${method} ${url.pathname}`);
+  };
+
+  await assert.rejects(
+    syncDarkroomScheduleChannel(
+      createEnv(undefined, {
+        darkroom: [
+          { discordSyncStatus: 'pending', status: 'open', syncRevision: 2 },
+        ],
+      }),
+      {
+        ...darkroomEvent(),
+        channelId: 'darkroom-thread',
+        managerDiscordIds: ['darkroom-manager'],
+        messageId: 'darkroom-message',
+        registeredCount: 0,
+        registrants: [],
+        removeDiscordIds: ['darkroom-member'],
+        syncRevision: 2,
+      },
+    ),
+    /Discord API request failed with 500/,
+  );
+
+  const allowIndex = requests.findIndex(
+    ({ method, pathname }) =>
+      method === 'PUT' && pathname.endsWith('/thread-members/darkroom-manager'),
+  );
+  const droppedMemberIndex = requests.findIndex(
+    ({ method, pathname }) =>
+      method === 'DELETE' &&
+      pathname.endsWith('/thread-members/darkroom-member'),
+  );
+  assert.ok(allowIndex >= 0);
+  assert.ok(droppedMemberIndex > allowIndex);
 });
 
 test('managed private threads still reject an explicit mismatched owner_id', () => {
