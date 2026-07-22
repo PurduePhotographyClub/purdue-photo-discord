@@ -22,6 +22,7 @@ export interface DiscordManagedChannel {
 }
 
 export interface ManagedPrivateThreadSpec {
+  legacyMarkers?: readonly string[];
   marker: string;
   parentChannelId: string;
   syncRevision?: number;
@@ -264,18 +265,20 @@ function readManagedPrivateThreadRevision(
     return null;
   }
 
-  if (spec.syncRevision === undefined) {
-    return name.endsWith(spec.marker) ? 0 : null;
-  }
+  for (const marker of [spec.marker, ...(spec.legacyMarkers ?? [])]) {
+    if (spec.syncRevision === undefined) {
+      if (name.endsWith(marker)) return 0;
+      continue;
+    }
 
-  const markerPrefix = `${spec.marker}-r`;
-  const markerIndex = name.lastIndexOf(markerPrefix);
-  if (markerIndex < 0) {
-    return null;
+    const markerPrefix = `${marker}-r`;
+    const markerIndex = name.lastIndexOf(markerPrefix);
+    if (markerIndex < 0) continue;
+    const revisionText = name.slice(markerIndex + markerPrefix.length);
+    const revision = Number(revisionText);
+    if (Number.isInteger(revision) && revision >= 0) return revision;
   }
-  const revisionText = name.slice(markerIndex + markerPrefix.length);
-  const revision = Number(revisionText);
-  return Number.isInteger(revision) && revision >= 0 ? revision : null;
+  return null;
 }
 
 function buildManagedPrivateThreadMarker(spec: ManagedPrivateThreadSpec) {

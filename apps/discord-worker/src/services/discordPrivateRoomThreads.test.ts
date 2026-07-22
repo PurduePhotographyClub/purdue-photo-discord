@@ -105,6 +105,16 @@ test('darkroom rooms reconcile participant additions and removals through thread
     'darkroom-thread',
     'invited-executive',
   );
+  const threadCreation = requests.find(
+    ({ method, pathname }) =>
+      method === 'POST' &&
+      pathname === `/api/v10/channels/${DARKROOM_REQUESTS_CHANNEL_ID}/threads`,
+  );
+  const threadName = (threadCreation?.body as { name?: string } | undefined)
+    ?.name;
+  assert.equal(threadName, 'darkroom-tue-jul-21-8am--dr-darkroomslot-r1');
+  assert.ok((threadName?.length ?? 101) <= 50);
+  assert.doesNotMatch(threadName ?? '', /pcc-darkroom|11111111-1111-/);
   const rootMessage = requests.find(
     ({ method, pathname }) =>
       method === 'POST' &&

@@ -295,8 +295,9 @@ test('slow modal submissions acknowledge before their API request finishes', asy
   ]);
 });
 
-test('a stale drop sync result converges once to the latest rejoin revision', async () => {
+test('a drop that is stale at preflight converges to the latest rejoin roster', async () => {
   const memberMutations: string[] = [];
+  const renderedCapacities: string[] = [];
   const persistenceBodies: Array<Record<string, unknown>> = [];
   let threadName = 'darkroom--pcc-darkroom-slot-123-r1';
   globalThis.fetch = async (input, init) => {
@@ -349,6 +350,12 @@ test('a stale drop sync result converges once to the latest rejoin revision', as
       method === 'PATCH' &&
       url.pathname === '/api/v10/channels/darkroom-thread/messages/message-123'
     ) {
+      const capacity = (
+        body as {
+          embeds?: Array<{ fields?: Array<{ name: string; value: string }> }>;
+        }
+      ).embeds?.[0]?.fields?.find((field) => field.name === 'Capacity')?.value;
+      if (capacity) renderedCapacities.push(capacity);
       return Response.json({ id: 'message-123' });
     }
 
@@ -382,7 +389,7 @@ test('a stale drop sync result converges once to the latest rejoin revision', as
             return Response.json({
               discordSyncStatus: 'pending',
               status: 'open',
-              syncRevision: stateReads === 1 ? 2 : 3,
+              syncRevision: 3,
             });
           }
           if (
@@ -409,9 +416,14 @@ test('a stale drop sync result converges once to the latest rejoin revision', as
   );
 
   assert.equal(response.data?.content, 'Dropped.');
-  assert.deepEqual(memberMutations, ['DELETE', 'PUT']);
+  assert.deepEqual(memberMutations, ['PUT']);
   assert.equal(threadName.endsWith('-r3'), true);
   assert.equal(stateReads, 2);
+  assert.deepEqual(renderedCapacities, ['1/4']);
+  assert.deepEqual(
+    persistenceBodies.map((body) => body.syncRevision),
+    [2, 3],
+  );
   assert.deepEqual(
     persistenceBodies.map((body) => body.removeManagerDiscordIds),
     [['former-manager-123'], ['former-manager-123']],
