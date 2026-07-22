@@ -126,6 +126,16 @@ test('darkroom rooms reconcile participant additions and removals through thread
   assert.match(rootComponents, /darkroom_schedule_drop:darkroom-slot/);
   assert.match(rootComponents, /darkroom_schedule_end:darkroom-slot/);
   assert.match(rootComponents, /darkroom_schedule_cancel:darkroom-slot/);
+  const removedMemberIndex = requests.findIndex(
+    ({ method, pathname }) =>
+      method === 'DELETE' && pathname.endsWith('/thread-members/former-member'),
+  );
+  const rootMessageIndex = requests.findIndex(
+    ({ method, pathname }) =>
+      method === 'POST' && pathname.endsWith('/darkroom-thread/messages'),
+  );
+  assert.ok(removedMemberIndex >= 0);
+  assert.ok(rootMessageIndex > removedMemberIndex);
   assertNoPermissionOverwriteRequests(requests);
 });
 
