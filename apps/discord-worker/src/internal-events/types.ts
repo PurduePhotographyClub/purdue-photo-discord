@@ -5,6 +5,7 @@
  * the Worker's validated, dispatch-ready view of that input.
  */
 import type { DiscordEmbed, GatewayInternalEvent } from '@pccbot/shared';
+import type { DiscordMembershipRoleConfiguration } from '../config/discord-role-ids';
 
 export interface MessageInternalEvent {
   channelId?: string;
@@ -224,12 +225,14 @@ export interface DiscordMemberRolesSyncInternalEvent {
   discordId: string;
   membershipExpired?: boolean;
   nickname?: string;
+  roleConfiguration: DiscordMembershipRoleConfiguration;
   tier?: 'facilities' | 'member' | null;
   type: 'website.discord.member_roles.sync';
 }
 
 export interface DiscordMemberRolesRemoveInternalEvent {
   discordId: string;
+  roleConfiguration: DiscordMembershipRoleConfiguration;
   type: 'website.discord.member_roles.remove';
 }
 

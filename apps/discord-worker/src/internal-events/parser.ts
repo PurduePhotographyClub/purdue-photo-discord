@@ -9,6 +9,7 @@ import type {
   GatewayEventType,
   GatewayInternalEvent,
 } from '@pccbot/shared';
+import type { DiscordMembershipRoleConfiguration } from '../config/discord-role-ids';
 import { BadRequestError } from '../utils/errors';
 import type {
   DarkroomStatsRank,
@@ -825,9 +826,14 @@ function parseMemberRolesEvent(
   if (!discordId) {
     throw new BadRequestError('Discord user ID is required.');
   }
+  assertDiscordSnowflake(discordId, 'Discord user ID');
 
   if (type === 'website.discord.member_roles.remove') {
-    return { discordId, type };
+    return {
+      discordId,
+      roleConfiguration: readDiscordMembershipRoleConfiguration(payload),
+      type,
+    };
   }
 
   if (type === 'website.discord.staff_role.resolve') {
@@ -863,8 +869,68 @@ function parseMemberRolesEvent(
     discordId,
     membershipExpired: readBoolean(payload, 'membershipExpired') ?? false,
     ...(nickname ? { nickname } : {}),
+    roleConfiguration: readDiscordMembershipRoleConfiguration(payload),
     ...(tier !== undefined ? { tier } : {}),
     type,
+  };
+}
+
+function readDiscordMembershipRoleConfiguration(
+  payload: Record<string, unknown>,
+): DiscordMembershipRoleConfiguration {
+  const configuration = payload.roleConfiguration;
+  if (configuration === undefined) {
+    throw new BadRequestError(
+      'Discord membership role configuration is required.',
+    );
+  }
+  if (!isRecord(configuration)) {
+    throw new BadRequestError(
+      'Discord membership role configuration must be an object.',
+    );
+  }
+
+  const memberRoleId = readString(configuration, 'memberRoleId');
+  const facilitiesRoleId = readString(configuration, 'facilitiesRoleId');
+  const managedRoleIds = readStringArray(configuration, 'managedRoleIds');
+  if (!memberRoleId || !facilitiesRoleId || !managedRoleIds) {
+    throw new BadRequestError(
+      'Discord membership role configuration is incomplete.',
+    );
+  }
+
+  assertDiscordSnowflake(memberRoleId, 'Discord membership member role ID');
+  assertDiscordSnowflake(
+    facilitiesRoleId,
+    'Discord membership facilities role ID',
+  );
+  if (memberRoleId === facilitiesRoleId) {
+    throw new BadRequestError('Discord membership role IDs must be distinct.');
+  }
+  if (
+    managedRoleIds.length === 0 ||
+    new Set(managedRoleIds).size !== managedRoleIds.length
+  ) {
+    throw new BadRequestError(
+      'Discord membership managed role IDs must be non-empty and unique.',
+    );
+  }
+  for (const roleId of managedRoleIds) {
+    assertDiscordSnowflake(roleId, 'Discord membership managed role ID');
+  }
+  if (
+    !managedRoleIds.includes(memberRoleId) ||
+    !managedRoleIds.includes(facilitiesRoleId)
+  ) {
+    throw new BadRequestError(
+      'Discord membership managed role IDs must include current role IDs.',
+    );
+  }
+
+  return {
+    facilitiesRoleId,
+    managedRoleIds,
+    memberRoleId,
   };
 }
 

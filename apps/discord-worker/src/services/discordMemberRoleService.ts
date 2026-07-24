@@ -1,4 +1,5 @@
 import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
+import type { DiscordMembershipRoleConfiguration } from '../config/discord-role-ids';
 import { discordApiRequest } from '../discord/api';
 import type { Env, Snowflake } from '../discord/types';
 import { BadRequestError, DiscordApiError } from '../utils/errors';
@@ -11,6 +12,7 @@ export interface SyncDiscordMemberRolesInput {
   discordId: string;
   membershipExpired?: boolean;
   nickname?: string | null;
+  roleConfiguration: DiscordMembershipRoleConfiguration;
   tier?: MembershipTier | null;
 }
 
@@ -66,11 +68,29 @@ const DISCORD_UNKNOWN_MEMBER_CODE = 10007;
 const DISCORD_UNKNOWN_ROLE_CODE = 10011;
 const DISCORD_PERMISSION_ADMINISTRATOR = 1n << 3n;
 const DISCORD_PERMISSION_MANAGE_NICKNAMES = 1n << 27n;
+const DISCORD_DANGEROUS_MEMBERSHIP_ROLE_PERMISSIONS =
+  (1n << 1n) | // Kick Members
+  (1n << 2n) | // Ban Members
+  DISCORD_PERMISSION_ADMINISTRATOR |
+  (1n << 4n) | // Manage Channels
+  (1n << 5n) | // Manage Guild
+  (1n << 13n) | // Manage Messages
+  DISCORD_PERMISSION_MANAGE_NICKNAMES |
+  (1n << 28n) | // Manage Roles
+  (1n << 29n) | // Manage Webhooks
+  (1n << 33n) | // Manage Events
+  (1n << 34n) | // Manage Threads
+  (1n << 40n); // Moderate Members
+const PROTECTED_STAFF_ROLE_IDS = new Set<string>([
+  DISCORD_ROLE_IDS.admin,
+  DISCORD_ROLE_IDS.executive,
+]);
 const logger = createLogger('discord-member-role-service');
-const MANAGED_ROLE_IDS = uniqueRoleIds([
+const BASE_MANAGED_ROLE_IDS = uniqueRoleIds([
   // Only these website-owned roles are added or removed, so unrelated Discord roles are untouched.
   DISCORD_ROLE_IDS.websiteVerified,
   DISCORD_ROLE_IDS.membershipExpired,
+  ...DISCORD_ROLE_IDS.legacyMembershipTierIds,
   ...DISCORD_ROLE_IDS.membershipTiers.member,
   ...DISCORD_ROLE_IDS.membershipTiers.facilities,
 ]);
@@ -231,8 +251,15 @@ export async function syncDiscordMemberRoles(
   if (!discordId) {
     throw new BadRequestError('Discord user ID is required.');
   }
+  const roleConfiguration = resolveMembershipRoleConfiguration(
+    input.roleConfiguration,
+  );
 
-  const member = await getGuildMember(env, guildId, discordId);
+  const [member, guildRoles] = await Promise.all([
+    getGuildMember(env, guildId, discordId),
+    getGuildRoles(env, guildId),
+  ]);
+  assertSafeMembershipRoleConfiguration(roleConfiguration, guildRoles);
   if (!member) {
     return {
       addedRoleIds: [],
@@ -243,10 +270,11 @@ export async function syncDiscordMemberRoles(
   }
 
   const existingRoleIds = new Set(member.roles ?? []);
-  const roleIdsToAdd = getDesiredRoleIds(input);
+  const roleIdsToAdd = getDesiredRoleIds(input, roleConfiguration);
+  const desiredRoleIds = new Set(roleIdsToAdd);
   // Anything managed by the website but no longer desired is cleaned up during every sync.
-  const roleIdsToRemove = MANAGED_ROLE_IDS.filter(
-    (roleId) => !roleIdsToAdd.includes(roleId),
+  const roleIdsToRemove = getManagedRoleIds(roleConfiguration).filter(
+    (roleId) => !desiredRoleIds.has(roleId),
   );
 
   const addOutcomes = await updateDiscordMemberRoles(
@@ -316,12 +344,15 @@ export async function syncDiscordMemberRoles(
 export async function removeDiscordManagedRoles(
   env: Env,
   discordId: string,
+  roleConfiguration: DiscordMembershipRoleConfiguration,
 ): Promise<SyncDiscordMemberRolesResult> {
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
   const trimmedDiscordId = discordId.trim();
   if (!trimmedDiscordId) {
     throw new BadRequestError('Discord user ID is required.');
   }
+  const resolvedRoleConfiguration =
+    resolveMembershipRoleConfiguration(roleConfiguration);
 
   const member = await getGuildMember(env, guildId, trimmedDiscordId);
   if (!member) {
@@ -338,7 +369,9 @@ export async function removeDiscordManagedRoles(
     env,
     guildId,
     trimmedDiscordId,
-    MANAGED_ROLE_IDS.filter((roleId) => existingRoleIds.has(roleId)),
+    getManagedRoleIds(resolvedRoleConfiguration).filter((roleId) =>
+      existingRoleIds.has(roleId),
+    ),
     'DELETE',
   );
   const removedRoleIds = getRoleIdsForResult(removeOutcomes, 'applied');
@@ -648,17 +681,139 @@ function hasRoleUpdateResult(
   return outcomes.some((outcome) => outcome.result === result);
 }
 
-function getDesiredRoleIds(input: SyncDiscordMemberRolesInput) {
+function getDesiredRoleIds(
+  input: SyncDiscordMemberRolesInput,
+  roleConfiguration: DiscordMembershipRoleConfiguration,
+) {
   const roleIds: string[] = [DISCORD_ROLE_IDS.websiteVerified];
 
   if (input.membershipExpired) {
     // Expired members keep the website marker role but swap tier roles for the expired marker.
     roleIds.push(DISCORD_ROLE_IDS.membershipExpired);
-  } else if (input.tier) {
-    roleIds.push(...DISCORD_ROLE_IDS.membershipTiers[input.tier]);
+  } else if (input.tier === 'member') {
+    roleIds.push(roleConfiguration.memberRoleId);
+  } else if (input.tier === 'facilities') {
+    roleIds.push(
+      roleConfiguration.memberRoleId,
+      roleConfiguration.facilitiesRoleId,
+    );
   }
 
   return uniqueRoleIds(roleIds);
+}
+
+function getManagedRoleIds(
+  roleConfiguration: DiscordMembershipRoleConfiguration,
+) {
+  return uniqueRoleIds(
+    [
+      ...BASE_MANAGED_ROLE_IDS,
+      ...roleConfiguration.managedRoleIds,
+      roleConfiguration.memberRoleId,
+      roleConfiguration.facilitiesRoleId,
+    ].filter((roleId) => !PROTECTED_STAFF_ROLE_IDS.has(roleId)),
+  );
+}
+
+function resolveMembershipRoleConfiguration(
+  value: DiscordMembershipRoleConfiguration | null | undefined,
+): DiscordMembershipRoleConfiguration {
+  if (!value) {
+    throw new BadRequestError(
+      'Discord membership role configuration is required.',
+    );
+  }
+
+  const memberRoleId = value.memberRoleId.trim();
+  const facilitiesRoleId = value.facilitiesRoleId.trim();
+  const managedRoleIds = value.managedRoleIds.map((roleId) => roleId.trim());
+
+  if (
+    !isDiscordSnowflake(memberRoleId) ||
+    !isDiscordSnowflake(facilitiesRoleId) ||
+    memberRoleId === facilitiesRoleId
+  ) {
+    throw new BadRequestError(
+      'Discord membership role configuration is invalid.',
+    );
+  }
+  if (
+    managedRoleIds.length === 0 ||
+    managedRoleIds.length > 25 ||
+    new Set(managedRoleIds).size !== managedRoleIds.length ||
+    managedRoleIds.some((roleId) => !isDiscordSnowflake(roleId)) ||
+    !managedRoleIds.includes(memberRoleId) ||
+    !managedRoleIds.includes(facilitiesRoleId)
+  ) {
+    throw new BadRequestError(
+      'Discord membership managed role IDs are invalid.',
+    );
+  }
+
+  return {
+    facilitiesRoleId,
+    managedRoleIds,
+    memberRoleId,
+  };
+}
+
+function assertSafeMembershipRoleConfiguration(
+  roleConfiguration: DiscordMembershipRoleConfiguration,
+  guildRoles: readonly DiscordGuildRoleResponse[],
+) {
+  const assignableRoleIds = uniqueRoleIds([
+    roleConfiguration.memberRoleId,
+    roleConfiguration.facilitiesRoleId,
+  ]);
+  if (
+    assignableRoleIds.some((roleId) => PROTECTED_STAFF_ROLE_IDS.has(roleId))
+  ) {
+    throw new BadRequestError(
+      'Discord membership configuration contains a protected Discord staff role.',
+    );
+  }
+
+  const guildRolesById = new Map(
+    guildRoles.flatMap((role) => (role.id ? [[role.id, role] as const] : [])),
+  );
+  for (const requiredRoleId of assignableRoleIds) {
+    if (!guildRolesById.has(requiredRoleId)) {
+      throw new BadRequestError(
+        'A configured Discord membership role does not exist.',
+      );
+    }
+  }
+
+  for (const roleId of assignableRoleIds) {
+    const role = guildRolesById.get(roleId)!;
+    const permissions = parseDiscordRolePermissions(role.permissions);
+    if (permissions === null) {
+      throw new BadRequestError(
+        'Discord membership role permissions could not be verified.',
+      );
+    }
+    if ((permissions & DISCORD_DANGEROUS_MEMBERSHIP_ROLE_PERMISSIONS) !== 0n) {
+      throw new BadRequestError(
+        'Discord membership roles cannot have dangerous Discord permissions.',
+      );
+    }
+  }
+}
+
+function parseDiscordRolePermissions(value: string | undefined) {
+  if (!value || !/^\d+$/.test(value)) {
+    return null;
+  }
+
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+function isDiscordSnowflake(value: string) {
+  return /^\d{17,20}$/.test(value);
 }
 
 export function getServerVerifiedRoleId(env: Env) {
