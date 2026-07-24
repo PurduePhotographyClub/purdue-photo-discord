@@ -279,7 +279,11 @@ async function handleMemberRolesEvent(
 
 async function runMemberRoleEvent(event: MemberRolesInternalEvent, env: Env) {
   if (event.type === 'website.discord.member_roles.remove') {
-    return removeDiscordManagedRoles(env, event.discordId);
+    return removeDiscordManagedRoles(
+      env,
+      event.discordId,
+      event.roleConfiguration,
+    );
   }
 
   if (event.type === 'website.discord.staff_role.resolve') {
@@ -323,6 +327,7 @@ function buildMemberRolesSyncInput(event: DiscordMemberRolesSyncInternalEvent) {
       ? { membershipExpired: event.membershipExpired }
       : {}),
     ...(event.nickname ? { nickname: event.nickname } : {}),
+    roleConfiguration: event.roleConfiguration,
     ...(event.tier !== undefined ? { tier: event.tier } : {}),
   };
 }
