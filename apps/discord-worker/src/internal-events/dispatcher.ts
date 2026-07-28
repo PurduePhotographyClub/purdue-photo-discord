@@ -38,6 +38,8 @@ import { handleGatewayEvent } from '../services/gatewayEventService';
 import { sweepExpiredPhotographerRequests } from '../services/photographerRequestStatusService';
 import type { Env } from '../discord/types';
 import { createLogger } from '../utils/logger';
+import { PHOTOGRAPHER_REQUEST_CHANNEL_IDS } from '../config/discord-channel-ids';
+import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import type {
   DiscordMemberRolesSyncInternalEvent,
   DiscordServerVerificationCompleteInternalEvent,
@@ -379,16 +381,29 @@ async function handleMessageEvent(
   event: MessageInternalEvent,
   env: Env,
 ): Promise<Record<string, unknown>> {
+  const shouldMentionJobsRole =
+    !event.messageId &&
+    event.type === 'website.photographer_request.create' &&
+    !!event.channelId &&
+    PHOTOGRAPHER_REQUEST_CHANNEL_IDS.has(event.channelId);
+  const content = shouldMentionJobsRole
+    ? [`<@&${DISCORD_ROLE_IDS.jobsAccess}>`, event.content]
+        .filter((value): value is string => Boolean(value))
+        .join('\n')
+    : event.content;
   const result = event.messageId
     ? await editDiscordMessage(env, {
         channelId: event.channelId ?? '',
-        content: event.content,
+        content,
         embeds: event.embeds,
         messageId: event.messageId,
       })
     : await sendDiscordMessage(env, {
+        allowedRoleIds: shouldMentionJobsRole
+          ? [DISCORD_ROLE_IDS.jobsAccess]
+          : undefined,
         channelId: event.channelId,
-        content: event.content,
+        content,
         embeds: event.embeds,
         nonce: event.nonce,
       });

@@ -35,6 +35,10 @@ import {
   isFilmRequestReviewButtonCustomId,
 } from '../services/discordFilmRequestService';
 import {
+  handleJobsAccessButton,
+  isJobsAccessButtonCustomId,
+} from '../services/discordJobsAccessService';
+import {
   handleStudioCancelButton,
   handleStudioReviewButton,
   handleStudioScheduleBookButton,
@@ -73,6 +77,10 @@ export async function handleButtonInteraction(
 
   if (isEquipmentLoanActionButtonCustomId(interaction.data.custom_id)) {
     return handleEquipmentLoanActionButton(interaction, env);
+  }
+
+  if (isJobsAccessButtonCustomId(interaction.data.custom_id)) {
+    return handleJobsAccessButton(interaction, env);
   }
 
   if (isStudioScheduleBookCustomId(interaction.data.custom_id)) {

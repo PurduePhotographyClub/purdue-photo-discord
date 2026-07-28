@@ -846,6 +846,7 @@ test('only long-running commands and darkroom components are selected for deferr
     'darkroom_schedule_cancel:slot-123',
     'equipment_terms:accept',
     'equipment_terms:deny',
+    'jobs_101:v1:accept',
     'equipment_loan:return:loan-123',
     'studio_cancel:request-123',
   ]) {
@@ -889,6 +890,7 @@ test('only long-running commands and darkroom components are selected for deferr
     'studio-message',
     'darkroom-stats',
     'equipment-terms-message',
+    'jobs-101-message',
   ]) {
     assert.equal(
       shouldDeferDiscordInteraction({

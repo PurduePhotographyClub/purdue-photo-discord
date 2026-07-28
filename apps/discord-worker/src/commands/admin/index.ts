@@ -9,6 +9,7 @@ export { darkroomStatsCommand } from './darkroomStats';
 export { equipmentTermsMessageCommand } from './equipmentTermsMessage';
 export { grantAdminCommand } from './grantAdmin';
 export { honeypotWarningCommand } from './honeypotWarning';
+export { jobs101MessageCommand } from './jobs101Message';
 export { keyCommand } from './key';
 export { statusCommand } from './status';
 export { studioMessageCommand } from './studioMessage';
