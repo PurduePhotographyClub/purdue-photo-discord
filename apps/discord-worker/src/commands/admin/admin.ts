@@ -85,6 +85,14 @@ function createAdminCommandList(): DiscordMessagePayload {
       ].join('\n'),
     },
     {
+      name: '→ Jobs 101',
+      value: [
+        '`/jobs-101-message`',
+        'Posts the Jobs 101 guide and access acknowledgement.',
+        '\u200B',
+      ].join('\n'),
+    },
+    {
       name: '→ System Check',
       value: [
         '`/health`',

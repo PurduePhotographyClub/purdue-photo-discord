@@ -273,9 +273,10 @@ export async function syncDiscordMemberRoles(
   const roleIdsToAdd = getDesiredRoleIds(input, roleConfiguration);
   const desiredRoleIds = new Set(roleIdsToAdd);
   // Anything managed by the website but no longer desired is cleaned up during every sync.
-  const roleIdsToRemove = getManagedRoleIds(roleConfiguration).filter(
-    (roleId) => !desiredRoleIds.has(roleId),
-  );
+  const roleIdsToRemove = uniqueRoleIds([
+    ...getManagedRoleIds(roleConfiguration),
+    ...(input.membershipExpired ? [DISCORD_ROLE_IDS.jobsAccess] : []),
+  ]).filter((roleId) => !desiredRoleIds.has(roleId));
 
   const addOutcomes = await updateDiscordMemberRoles(
     env,
@@ -369,9 +370,10 @@ export async function removeDiscordManagedRoles(
     env,
     guildId,
     trimmedDiscordId,
-    getManagedRoleIds(resolvedRoleConfiguration).filter((roleId) =>
-      existingRoleIds.has(roleId),
-    ),
+    uniqueRoleIds([
+      ...getManagedRoleIds(resolvedRoleConfiguration),
+      DISCORD_ROLE_IDS.jobsAccess,
+    ]).filter((roleId) => existingRoleIds.has(roleId)),
     'DELETE',
   );
   const removedRoleIds = getRoleIdsForResult(removeOutcomes, 'applied');

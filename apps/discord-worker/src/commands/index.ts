@@ -9,6 +9,7 @@ export {
   darkroomStatsCommand,
   equipmentTermsMessageCommand,
   honeypotWarningCommand,
+  jobs101MessageCommand,
   statusCommand,
   studioMessageCommand,
 } from './admin';

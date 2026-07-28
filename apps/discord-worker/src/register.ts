@@ -6,6 +6,7 @@
  * Cloudflare's runtime.
  */
 import process from 'node:process';
+import { URL as NodeUrl, fileURLToPath } from 'node:url';
 import { commandDefinitions } from '../config/commands';
 import {
   type CommandRegistrationOptions,
@@ -13,9 +14,13 @@ import {
 } from './discord/api';
 import type { Env } from './discord/types';
 import { isAppError } from './utils/errors';
+import { loadNodeEnvFileIfPresent } from './utils/nodeEnvFile';
 
 // This script runs under Node, not inside Wrangler, so mirror only the Worker
 // bindings needed by command registration and shared Discord API helpers.
+loadNodeEnvFileIfPresent(
+  fileURLToPath(new NodeUrl('../.dev.vars', import.meta.url)),
+);
 const env = readNodeEnv();
 const options = readCommandRegistrationOptions(process.argv.slice(2));
 

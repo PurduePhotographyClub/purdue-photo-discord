@@ -10,6 +10,7 @@ import { getOptionalEnv } from '../utils/env';
 import { BadRequestError, DiscordApiError } from '../utils/errors';
 
 export interface SendDiscordMessageInput {
+  allowedRoleIds?: string[] | undefined;
   channelId?: string | undefined;
   components?: unknown[] | undefined;
   content?: string | undefined;
@@ -77,6 +78,22 @@ export async function sendDiscordMessage(
     );
   }
 
+  if (input.content && input.content.length > 2_000) {
+    throw new BadRequestError(
+      'Outbound Discord message content must not exceed 2,000 characters.',
+    );
+  }
+
+  const allowedRoleIds = [...new Set(input.allowedRoleIds ?? [])];
+  if (
+    allowedRoleIds.length > 100 ||
+    allowedRoleIds.some((roleId) => !/^\d{17,20}$/.test(roleId))
+  ) {
+    throw new BadRequestError(
+      'Discord role mentions must contain valid role IDs.',
+    );
+  }
+
   const nonce = input.nonce?.trim();
   if (input.nonce !== undefined && (!nonce || nonce.length > 25)) {
     throw new BadRequestError(
@@ -88,8 +105,12 @@ export async function sendDiscordMessage(
     return await discordApiRequest(env, `/channels/${channelId}/messages`, {
       body: JSON.stringify({
         // Prevent forwarded website or gateway text from unexpectedly pinging
-        // members, roles, or everyone in the server.
-        allowed_mentions: { parse: [] },
+        // members, roles, or everyone in the server unless a trusted caller
+        // explicitly allows a validated role.
+        allowed_mentions:
+          allowedRoleIds.length > 0
+            ? { parse: [], roles: allowedRoleIds }
+            : { parse: [] },
         components: input.components,
         content: input.content,
         embeds: input.embeds,

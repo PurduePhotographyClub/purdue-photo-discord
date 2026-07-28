@@ -14,6 +14,7 @@ const DEFAULT_FACILITIES_ROLE_ID = '1519105558127575141';
 const HISTORICAL_ROLE_ID = '1510000000000000001';
 const LEGACY_PLACEHOLDER_ROLE_ID = '1512510317740036216';
 const WEBSITE_VERIFIED_ROLE_ID = '1503180707550199920';
+const JOBS_ACCESS_ROLE_ID = '1523461630522953928';
 const DISCORD_ID = '123456789012345678';
 const originalFetch = globalThis.fetch;
 
@@ -187,6 +188,7 @@ test('member sync removes facilities and historical roles while keeping the memb
     DEFAULT_FACILITIES_ROLE_ID,
     LEGACY_PLACEHOLDER_ROLE_ID,
     HISTORICAL_ROLE_ID,
+    JOBS_ACCESS_ROLE_ID,
   ]);
 
   const result = await syncDiscordMemberRoles(createEnv(), {
@@ -210,6 +212,34 @@ test('member sync removes facilities and historical roles while keeping the memb
   ]);
 });
 
+test('expired membership removes the Jobs access role', async () => {
+  const requests = installDiscordFetchMock([
+    WEBSITE_VERIFIED_ROLE_ID,
+    DEFAULT_MEMBER_ROLE_ID,
+    JOBS_ACCESS_ROLE_ID,
+  ]);
+
+  const result = await syncDiscordMemberRoles(createEnv(), {
+    discordId: DISCORD_ID,
+    membershipExpired: true,
+    roleConfiguration,
+    tier: 'member',
+  });
+
+  assert.deepEqual(result.addedRoleIds, [LEGACY_PLACEHOLDER_ROLE_ID]);
+  assert.deepEqual(result.removedRoleIds, [
+    DEFAULT_MEMBER_ROLE_ID,
+    JOBS_ACCESS_ROLE_ID,
+  ]);
+  assert.deepEqual(requests, [
+    `GET /api/v10/guilds/guild-123/members/${DISCORD_ID}`,
+    'GET /api/v10/guilds/guild-123/roles',
+    `PUT /api/v10/guilds/guild-123/members/${DISCORD_ID}/roles/${LEGACY_PLACEHOLDER_ROLE_ID}`,
+    `DELETE /api/v10/guilds/guild-123/members/${DISCORD_ID}/roles/${DEFAULT_MEMBER_ROLE_ID}`,
+    `DELETE /api/v10/guilds/guild-123/members/${DISCORD_ID}/roles/${JOBS_ACCESS_ROLE_ID}`,
+  ]);
+});
+
 test('remove events clear current, historical, and legacy managed roles', async () => {
   const requests = installDiscordFetchMock([
     WEBSITE_VERIFIED_ROLE_ID,
@@ -217,6 +247,7 @@ test('remove events clear current, historical, and legacy managed roles', async 
     DEFAULT_FACILITIES_ROLE_ID,
     LEGACY_PLACEHOLDER_ROLE_ID,
     HISTORICAL_ROLE_ID,
+    JOBS_ACCESS_ROLE_ID,
   ]);
   const event = parseInternalEvent({
     discordId: DISCORD_ID,
@@ -232,6 +263,7 @@ test('remove events clear current, historical, and legacy managed roles', async 
     DEFAULT_MEMBER_ROLE_ID,
     DEFAULT_FACILITIES_ROLE_ID,
     HISTORICAL_ROLE_ID,
+    JOBS_ACCESS_ROLE_ID,
   ]);
   assert.deepEqual(requests, [
     `GET /api/v10/guilds/guild-123/members/${DISCORD_ID}`,
@@ -240,6 +272,7 @@ test('remove events clear current, historical, and legacy managed roles', async 
     `DELETE /api/v10/guilds/guild-123/members/${DISCORD_ID}/roles/${DEFAULT_MEMBER_ROLE_ID}`,
     `DELETE /api/v10/guilds/guild-123/members/${DISCORD_ID}/roles/${DEFAULT_FACILITIES_ROLE_ID}`,
     `DELETE /api/v10/guilds/guild-123/members/${DISCORD_ID}/roles/${HISTORICAL_ROLE_ID}`,
+    `DELETE /api/v10/guilds/guild-123/members/${DISCORD_ID}/roles/${JOBS_ACCESS_ROLE_ID}`,
   ]);
 });
 

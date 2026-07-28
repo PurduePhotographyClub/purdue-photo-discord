@@ -25,6 +25,7 @@ import {
   isEquipmentTermsButtonCustomId,
 } from '../services/discordEquipmentLoanService';
 import { isFilmRequestReviewModalCustomId } from '../services/discordFilmRequestService';
+import { isJobsAccessButtonCustomId } from '../services/discordJobsAccessService';
 import {
   isStudioDirectCancelButtonCustomId,
   isStudioModalCustomId,
@@ -82,7 +83,8 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
     return (
       interaction.data.name === 'studio-message' ||
       interaction.data.name === 'darkroom-stats' ||
-      interaction.data.name === 'equipment-terms-message'
+      interaction.data.name === 'equipment-terms-message' ||
+      interaction.data.name === 'jobs-101-message'
     );
   }
 
@@ -113,6 +115,7 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
     isDarkroomScheduleJoinSelectCustomId(customId) ||
     isDarkroomScheduleSessionActionCustomId(customId) ||
     isEquipmentTermsButtonCustomId(customId) ||
+    isJobsAccessButtonCustomId(customId) ||
     isEquipmentLoanActionButtonCustomId(customId) ||
     isStudioDirectCancelButtonCustomId(customId)
   );
