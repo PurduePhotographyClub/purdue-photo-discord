@@ -27,6 +27,7 @@ import type {
   EquipmentLoanSyncInternalEvent,
   FilmRequestReviewInternalEvent,
   MemberRolesInternalEvent,
+  MemberReportProjection,
   MessageInternalEvent,
   ParsedInternalEvent,
   PhotographerRequestExpirySweepInternalEvent,
@@ -149,6 +150,13 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
     };
   }
 
+  if (type === 'website.member_report.sync') {
+    return {
+      event: parseMemberReportProjection(payload),
+      kind: 'memberReport',
+    };
+  }
+
   if (
     type === 'website.discord.member_roles.remove' ||
     type === 'website.discord.member_roles.sync' ||
@@ -171,6 +179,99 @@ function parsePhotographerRequestExpirySweepEvent(
   type: PhotographerRequestExpirySweepInternalEvent['type'],
 ): PhotographerRequestExpirySweepInternalEvent {
   return { type };
+}
+
+export function parseMemberReportProjection(
+  payload: unknown,
+): MemberReportProjection {
+  if (!isRecord(payload)) {
+    throw new BadRequestError('Member report projection must be an object.');
+  }
+
+  const reportId = readString(payload, 'reportId');
+  const type = readString(payload, 'type');
+  const reportedName = readString(payload, 'reportedName');
+  const submittedName = readString(payload, 'submittedName');
+  const behavior = readString(payload, 'behavior');
+  const reason = readNullableString(payload, 'reason') ?? null;
+  const relatedReportCount = readInteger(payload, 'relatedReportCount');
+  const matchMethod = readString(payload, 'matchMethod');
+  const submittedAt = readString(payload, 'submittedAt');
+  const messageId = readNullableString(payload, 'messageId');
+
+  if (type !== 'website.member_report.sync') {
+    throw new BadRequestError('Member report type is invalid.');
+  }
+
+  if (!reportId || !isUuid(reportId)) {
+    throw new BadRequestError('Member report reportId must be a UUID.');
+  }
+
+  if (!reportedName || reportedName.length < 2 || reportedName.length > 120) {
+    throw new BadRequestError(
+      'Member report reportedName must be 2-120 characters.',
+    );
+  }
+
+  if (
+    !submittedName ||
+    submittedName.length < 2 ||
+    submittedName.length > 120
+  ) {
+    throw new BadRequestError(
+      'Member report submittedName must be 2-120 characters.',
+    );
+  }
+
+  if (!behavior || behavior.length < 20 || behavior.length > 2_000) {
+    throw new BadRequestError(
+      'Member report behavior must be 20-2,000 characters.',
+    );
+  }
+
+  if (reason !== null && countUnicodeCharacters(reason) > 500) {
+    throw new BadRequestError(
+      'Member report reason cannot exceed 500 characters.',
+    );
+  }
+
+  if (relatedReportCount === null || relatedReportCount < 1) {
+    throw new BadRequestError(
+      'Member report relatedReportCount must be at least 1.',
+    );
+  }
+
+  if (
+    matchMethod !== 'exact' &&
+    matchMethod !== 'similar' &&
+    matchMethod !== 'manual' &&
+    matchMethod !== 'unmatched'
+  ) {
+    throw new BadRequestError('Member report matchMethod is invalid.');
+  }
+
+  if (!submittedAt || Number.isNaN(Date.parse(submittedAt))) {
+    throw new BadRequestError('Member report submittedAt must be an ISO date.');
+  }
+
+  assertOptionalDiscordSnowflake(messageId, 'Member report messageId');
+
+  return {
+    behavior,
+    matchMethod,
+    reason,
+    relatedReportCount,
+    reportId,
+    reportedName,
+    submittedAt,
+    submittedName,
+    type: 'website.member_report.sync',
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
+}
+
+function countUnicodeCharacters(value: string): number {
+  return Array.from(value).length;
 }
 
 function parseDarkroomStatsEvent(

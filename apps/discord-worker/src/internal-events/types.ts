@@ -221,6 +221,19 @@ export interface PhotographerRequestExpirySweepInternalEvent {
   type: 'website.photographer_request.expired_sweep';
 }
 
+export interface MemberReportProjection {
+  behavior: string;
+  matchMethod: 'exact' | 'manual' | 'similar' | 'unmatched';
+  messageId?: string | null;
+  reason: string | null;
+  relatedReportCount: number;
+  reportId: string;
+  reportedName: string;
+  submittedAt: string;
+  submittedName: string;
+  type: 'website.member_report.sync';
+}
+
 export interface DiscordMemberRolesSyncInternalEvent {
   discordId: string;
   membershipExpired?: boolean;
@@ -307,6 +320,10 @@ export type ParsedInternalEvent =
   | {
       event: PhotographerRequestExpirySweepInternalEvent;
       kind: 'photographerRequestExpirySweep';
+    }
+  | {
+      event: MemberReportProjection;
+      kind: 'memberReport';
     }
   | {
       event: MemberRolesInternalEvent;

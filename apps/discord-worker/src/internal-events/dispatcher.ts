@@ -36,6 +36,7 @@ import {
 import { sendDiscordVerificationWelcomeMessage } from '../services/discordVerificationService';
 import { handleGatewayEvent } from '../services/gatewayEventService';
 import { sweepExpiredPhotographerRequests } from '../services/photographerRequestStatusService';
+import { syncMemberReportProjection } from '../services/discordMemberReportService';
 import type { Env } from '../discord/types';
 import { createLogger } from '../utils/logger';
 import { PHOTOGRAPHER_REQUEST_CHANNEL_IDS } from '../config/discord-channel-ids';
@@ -79,6 +80,8 @@ export async function dispatchInternalEvent(
       return handleFilmRequestReviewEvent(parsedEvent.event, env);
     case 'photographerRequestExpirySweep':
       return handlePhotographerRequestExpirySweepEvent(parsedEvent.event, env);
+    case 'memberReport':
+      return handleMemberReportEvent(parsedEvent.event, env);
     case 'memberRoles':
       return handleMemberRolesEvent(parsedEvent.event, env, context);
     case 'scheduledEvent':
@@ -86,6 +89,20 @@ export async function dispatchInternalEvent(
     case 'message':
       return handleMessageEvent(parsedEvent.event, env);
   }
+}
+
+async function handleMemberReportEvent(
+  event: Extract<ParsedInternalEvent, { kind: 'memberReport' }>['event'],
+  env: Env,
+): Promise<Record<string, unknown>> {
+  const result = await syncMemberReportProjection(env, event);
+
+  return {
+    channelId: result.channelId,
+    messageId: result.messageId,
+    ok: true,
+    type: event.type,
+  };
 }
 
 async function handleDarkroomStatsEvent(

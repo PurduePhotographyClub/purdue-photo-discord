@@ -27,6 +27,10 @@ import {
 import { isFilmRequestReviewModalCustomId } from '../services/discordFilmRequestService';
 import { isJobsAccessButtonCustomId } from '../services/discordJobsAccessService';
 import {
+  isMemberReportCorrectionModalCustomId,
+  isMemberReportModalCustomId,
+} from '../services/discordMemberReportService';
+import {
   isStudioDirectCancelButtonCustomId,
   isStudioModalCustomId,
 } from '../services/discordStudioScheduleService';
@@ -96,7 +100,9 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
   ) {
     return (
       isStudioModalCustomId(interaction.data.custom_id) ||
-      isFilmRequestReviewModalCustomId(interaction.data.custom_id)
+      isFilmRequestReviewModalCustomId(interaction.data.custom_id) ||
+      isMemberReportModalCustomId(interaction.data.custom_id) ||
+      isMemberReportCorrectionModalCustomId(interaction.data.custom_id)
     );
   }
 
