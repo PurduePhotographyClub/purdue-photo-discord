@@ -67,6 +67,24 @@ export interface DiscordComponentData {
 export interface DiscordModalSubmitData {
   custom_id: string;
   components?: unknown[];
+  resolved?: DiscordResolvedData;
+}
+
+export interface DiscordResolvedData {
+  members?: Record<Snowflake, DiscordResolvedMember>;
+  users?: Record<Snowflake, DiscordResolvedUser>;
+}
+
+export interface DiscordResolvedMember {
+  nick?: string | null;
+  roles?: Snowflake[];
+}
+
+export interface DiscordResolvedUser {
+  bot?: boolean;
+  global_name?: string | null;
+  id?: Snowflake;
+  username?: string;
 }
 
 export type DiscordInteractionData =

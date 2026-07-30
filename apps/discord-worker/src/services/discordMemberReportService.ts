@@ -18,7 +18,7 @@ import type {
 } from '../discord/types';
 import { parseMemberReportProjection } from '../internal-events/parser';
 import type { MemberReportProjection } from '../internal-events/types';
-import { DiscordApiError } from '../utils/errors';
+import { BadRequestError, DiscordApiError } from '../utils/errors';
 import { createLogger } from '../utils/logger';
 import {
   editDiscordMessage,
@@ -29,11 +29,11 @@ import { requestWebsiteApi } from './websiteApiService';
 const ACTION_ROW = 1;
 const BUTTON = 2;
 const SECONDARY_BUTTON = 2;
+const PRIMARY_BUTTON = 1;
 const INPUT_TEXT = 4;
-const SHORT_TEXT = 1;
 const PARAGRAPH_TEXT = 2;
 const LABEL = 18;
-const REPORT_NAME_CUSTOM_ID = 'member_report_name';
+const REPORT_TARGET_CUSTOM_ID = 'member_report_target';
 const REPORT_BEHAVIOR_CUSTOM_ID = 'member_report_behavior';
 const REPORT_REASON_CUSTOM_ID = 'member_report_reason';
 const CORRECT_MEMBER_CUSTOM_ID = 'member_report_correct_user';
@@ -44,6 +44,7 @@ const DISCORD_SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 const logger = createLogger('member-reports');
 
 export const MEMBER_REPORT_CHANNEL_ID = DISCORD_CHANNEL_IDS.memberReports;
+export const MEMBER_REPORT_OPEN_BUTTON_CUSTOM_ID = 'member_report:v1:open';
 export const MEMBER_REPORT_MODAL_CUSTOM_ID = 'member_report_submit';
 export const MEMBER_REPORT_CORRECT_CUSTOM_ID_PREFIX = 'member_report_correct:';
 export const MEMBER_REPORT_CORRECT_MODAL_CUSTOM_ID_PREFIX =
@@ -63,9 +64,53 @@ interface MemberReportMessageResult {
 
 type ModalValue = boolean | string | string[];
 
+type ResolvedMemberTarget =
+  | {
+      displayName: string;
+      discordId: string;
+      error?: never;
+    }
+  | {
+      displayName?: never;
+      discordId?: never;
+      error: string;
+    };
+
 export function handleMemberReportCommand(
   interaction: ApplicationCommandInteraction,
 ): DiscordInteractionResponse {
+  return createMemberReportModalResponse(interaction);
+}
+
+export function handleMemberReportOpenButton(
+  interaction: ComponentInteraction,
+): DiscordInteractionResponse {
+  return createMemberReportModalResponse(interaction);
+}
+
+export async function postMemberReportPanel(
+  env: Env,
+  channelId: string | undefined,
+) {
+  const validChannelId = readDiscordSnowflake(channelId);
+  if (!validChannelId) {
+    throw new BadRequestError('A valid Discord channel is required.');
+  }
+
+  const result = await sendDiscordMessage(env, {
+    channelId: validChannelId,
+    ...createMemberReportPanelPayload(),
+  });
+
+  return {
+    channelId: validChannelId,
+    messageId: readDiscordMessageId(result),
+  };
+}
+
+function createMemberReportModalResponse(interaction: {
+  member?: { roles?: string[] };
+}): DiscordInteractionResponse {
   if (!hasPpcMemberRole(interaction)) {
     return memberRoleRequiredResponse();
   }
@@ -127,10 +172,14 @@ export async function handleMemberReportModalSubmit(
   }
 
   const values = readModalValues(interaction);
-  const reportedName = readModalString(values.get(REPORT_NAME_CUSTOM_ID));
+  const target = resolveSelectedMember(interaction, REPORT_TARGET_CUSTOM_ID);
+  if (target.error) {
+    return ephemeralResponse(target.error);
+  }
+
   const behavior = readModalString(values.get(REPORT_BEHAVIOR_CUSTOM_ID));
   const reason = readModalString(values.get(REPORT_REASON_CUSTOM_ID));
-  const validationError = validateReportInput(reportedName, behavior, reason);
+  const validationError = validateReportInput(behavior, reason);
   if (validationError) {
     return ephemeralResponse(validationError);
   }
@@ -140,7 +189,14 @@ export async function handleMemberReportModalSubmit(
       env,
       '/member-reports/by-discord',
       {
-        body: { behavior, discordId, interactionId, reason, reportedName },
+        body: {
+          behavior,
+          discordId,
+          interactionId,
+          reason,
+          reportedDiscordId: target.discordId,
+          reportedName: target.displayName,
+        },
         method: 'POST',
       },
     );
@@ -202,16 +258,9 @@ export async function handleMemberReportCorrectionModalSubmit(
     return ephemeralResponse('I could not identify your Discord account.');
   }
 
-  const selectedUsers = readModalStringArray(
-    readModalValues(interaction).get(CORRECT_MEMBER_CUSTOM_ID),
-  );
-  const reportedDiscordId = selectedUsers[0];
-  if (
-    selectedUsers.length !== 1 ||
-    !reportedDiscordId ||
-    !DISCORD_SNOWFLAKE_PATTERN.test(reportedDiscordId)
-  ) {
-    return ephemeralResponse('Select one Discord member for this report.');
+  const target = resolveSelectedMember(interaction, CORRECT_MEMBER_CUSTOM_ID);
+  if (target.error) {
+    return ephemeralResponse(target.error);
   }
 
   try {
@@ -219,7 +268,11 @@ export async function handleMemberReportCorrectionModalSubmit(
       env,
       `/admin/member-reports/${encodeURIComponent(reportId)}/match-by-discord`,
       {
-        body: { discordId, reportedDiscordId },
+        body: {
+          discordId,
+          reportedDiscordId: target.discordId,
+          reportedName: target.displayName,
+        },
         method: 'POST',
       },
     );
@@ -312,14 +365,11 @@ export async function postMemberReportMessage(
 function createMemberReportModalPayload() {
   return {
     components: [
-      createTextInputLabel({
-        customId: REPORT_NAME_CUSTOM_ID,
-        description: 'Use the name they are known by in the club.',
-        label: 'Member name',
-        maxLength: 120,
-        minLength: 2,
-        placeholder: 'Enter the member’s name',
-        style: SHORT_TEXT,
+      createUserSelectLabel({
+        customId: REPORT_TARGET_CUSTOM_ID,
+        description: 'Choose the PPC member you are reporting.',
+        label: 'Member',
+        placeholder: 'Select the member',
       }),
       createTextInputLabel({
         customId: REPORT_BEHAVIOR_CUSTOM_ID,
@@ -343,6 +393,54 @@ function createMemberReportModalPayload() {
     ],
     custom_id: MEMBER_REPORT_MODAL_CUSTOM_ID,
     title: 'Report member behaviour',
+  };
+}
+
+function createMemberReportPanelPayload() {
+  return {
+    components: [
+      {
+        components: [
+          {
+            custom_id: MEMBER_REPORT_OPEN_BUTTON_CUSTOM_ID,
+            label: 'Open report form',
+            style: PRIMARY_BUTTON,
+            type: BUTTON,
+          },
+        ],
+        type: ACTION_ROW,
+      },
+    ],
+    embeds: [
+      {
+        color: 0xf2c94c,
+        description:
+          'Report a member’s behaviour anonymously to the Executive team. Use the button below to open the form.',
+        footer: { text: 'Purdue Photography Club' },
+        title: 'Report a concern',
+      },
+    ],
+  };
+}
+
+function createUserSelectLabel(options: {
+  customId: string;
+  description: string;
+  label: string;
+  placeholder: string;
+}) {
+  return {
+    component: {
+      custom_id: options.customId,
+      max_values: 1,
+      min_values: 1,
+      placeholder: options.placeholder,
+      required: true,
+      type: MessageComponentTypes.USER_SELECT,
+    },
+    description: options.description,
+    label: options.label,
+    type: LABEL,
   };
 }
 
@@ -552,14 +650,9 @@ function createMemberReportNonce(reportId: string): string {
 }
 
 function validateReportInput(
-  reportedName: string | null,
   behavior: string | null,
   reason: string | null,
 ): string | undefined {
-  if (!reportedName || reportedName.length < 2 || reportedName.length > 120) {
-    return 'Enter a member name between 2 and 120 characters.';
-  }
-
   if (!behavior || behavior.length < 20 || behavior.length > 2_000) {
     return 'Describe what happened in 20 to 2,000 characters.';
   }
@@ -684,6 +777,60 @@ function readModalStringArray(value: ModalValue | undefined): string[] {
         return trimmedItem ? [trimmedItem] : [];
       })
     : [];
+}
+
+function resolveSelectedMember(
+  interaction: ModalSubmitInteraction,
+  customId: string,
+): ResolvedMemberTarget {
+  const selectedUsers = readModalStringArray(
+    readModalValues(interaction).get(customId),
+  );
+  const discordId = selectedUsers[0];
+  if (
+    selectedUsers.length !== 1 ||
+    !discordId ||
+    !DISCORD_SNOWFLAKE_PATTERN.test(discordId)
+  ) {
+    return { error: 'Select one Discord member for this report.' };
+  }
+
+  const member = interaction.data.resolved?.members?.[discordId];
+  const user = interaction.data.resolved?.users?.[discordId];
+  if (
+    !member ||
+    !user ||
+    readDiscordSnowflake(user.id) !== discordId ||
+    user.bot === true
+  ) {
+    return {
+      error: 'I could not verify that Discord member. Select them again.',
+    };
+  }
+
+  if (
+    !member.roles?.includes(
+      DEFAULT_DISCORD_MEMBERSHIP_ROLE_CONFIGURATION.memberRoleId,
+    )
+  ) {
+    return { error: 'Select a PPC member for this report.' };
+  }
+
+  const displayName =
+    readTrimmedString(member.nick) ??
+    readTrimmedString(user.global_name) ??
+    readTrimmedString(user.username);
+  if (!displayName) {
+    return {
+      error: 'I could not verify that Discord member. Select them again.',
+    };
+  }
+
+  return { displayName, discordId };
+}
+
+function readTrimmedString(value: null | string | undefined): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 function requireDiscordMessageId(result: unknown): string {

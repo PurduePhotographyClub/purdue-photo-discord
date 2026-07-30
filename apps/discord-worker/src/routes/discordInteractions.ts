@@ -88,7 +88,9 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
       interaction.data.name === 'studio-message' ||
       interaction.data.name === 'darkroom-stats' ||
       interaction.data.name === 'equipment-terms-message' ||
-      interaction.data.name === 'jobs-101-message'
+      interaction.data.name === 'jobs-101-message' ||
+      interaction.data.name === 'post-report-message' ||
+      interaction.data.name === 'clear-reports'
     );
   }
 
