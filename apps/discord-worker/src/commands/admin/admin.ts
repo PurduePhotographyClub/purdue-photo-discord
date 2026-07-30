@@ -116,6 +116,18 @@ function createAdminCommandList(): DiscordMessagePayload {
       ].join('\n'),
     },
     {
+      name: '→ Member Reports',
+      value: [
+        '`/post-report-message`',
+        'Posts the anonymous member report button in the current channel.',
+        '',
+        '`/clear-reports`',
+        '> `confirm:` `CLEAR REPORTS`',
+        'Permanently deletes every member report and matching record.',
+        '\u200B',
+      ].join('\n'),
+    },
+    {
       name: '→ Wiki Hub',
       value: [
         '`/wiki-message`',

@@ -6,10 +6,12 @@
  */
 export {
   adminCommand,
+  clearReportsCommand,
   darkroomStatsCommand,
   equipmentTermsMessageCommand,
   honeypotWarningCommand,
   jobs101MessageCommand,
+  postReportMessageCommand,
   statusCommand,
   studioMessageCommand,
 } from './admin';

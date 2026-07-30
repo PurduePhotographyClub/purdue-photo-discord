@@ -47,7 +47,9 @@ import {
   isStudioScheduleBookCustomId,
 } from '../services/discordStudioScheduleService';
 import {
+  MEMBER_REPORT_OPEN_BUTTON_CUSTOM_ID,
   handleMemberReportCorrectionButton,
+  handleMemberReportOpenButton,
   isMemberReportCorrectionButtonCustomId,
 } from '../services/discordMemberReportService';
 
@@ -85,6 +87,10 @@ export async function handleButtonInteraction(
 
   if (isJobsAccessButtonCustomId(interaction.data.custom_id)) {
     return handleJobsAccessButton(interaction, env);
+  }
+
+  if (interaction.data.custom_id === MEMBER_REPORT_OPEN_BUTTON_CUSTOM_ID) {
+    return handleMemberReportOpenButton(interaction);
   }
 
   if (isMemberReportCorrectionButtonCustomId(interaction.data.custom_id)) {

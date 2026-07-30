@@ -5,12 +5,14 @@
  * from the interaction handler.
  */
 import { adminCommand } from '../src/commands/admin/admin';
+import { clearReportsCommand } from '../src/commands/admin/clearReports';
 import { darkroomStatsCommand } from '../src/commands/admin/darkroomStats';
 import { equipmentTermsMessageCommand } from '../src/commands/admin/equipmentTermsMessage';
 import { grantAdminCommand } from '../src/commands/admin/grantAdmin';
 import { honeypotWarningCommand } from '../src/commands/admin/honeypotWarning';
 import { jobs101MessageCommand } from '../src/commands/admin/jobs101Message';
 import { keyCommand } from '../src/commands/admin/key';
+import { postReportMessageCommand } from '../src/commands/admin/postReportMessage';
 import { statusCommand } from '../src/commands/admin/status';
 import { studioMessageCommand } from '../src/commands/admin/studioMessage';
 import { verifyMessageCommand } from '../src/commands/admin/verifyMessage';
@@ -28,6 +30,7 @@ import type {
 
 export const commands = [
   adminCommand,
+  clearReportsCommand,
   darkroomStatsCommand,
   equipmentCommand,
   equipmentTermsMessageCommand,
@@ -38,6 +41,7 @@ export const commands = [
   keyCommand,
   merchCommand,
   newsletterCommand,
+  postReportMessageCommand,
   reportCommand,
   statusCommand,
   studioMessageCommand,
