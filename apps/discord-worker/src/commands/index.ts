@@ -13,7 +13,12 @@ export {
   statusCommand,
   studioMessageCommand,
 } from './admin';
-export { equipmentCommand, healthCommand, wikiCommand } from './general';
+export {
+  equipmentCommand,
+  healthCommand,
+  reportCommand,
+  wikiCommand,
+} from './general';
 export {
   commandDefinitions,
   commands,

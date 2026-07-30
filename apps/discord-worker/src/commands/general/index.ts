@@ -6,3 +6,4 @@ export { equipmentCommand } from './equipment';
 export { merchCommand } from './merch';
 export { newsletterCommand } from './newsletter';
 export { wikiCommand } from './wiki';
+export { reportCommand } from './report';

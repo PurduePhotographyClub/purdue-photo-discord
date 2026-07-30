@@ -18,11 +18,25 @@ import {
   handleStudioModalSubmit,
   isStudioModalCustomId,
 } from '../services/discordStudioScheduleService';
+import {
+  handleMemberReportCorrectionModalSubmit,
+  handleMemberReportModalSubmit,
+  isMemberReportCorrectionModalCustomId,
+  isMemberReportModalCustomId,
+} from '../services/discordMemberReportService';
 
 export async function handleModalSubmitInteraction(
   interaction: ModalSubmitInteraction,
   env: Env,
 ): Promise<DiscordInteractionResponse> {
+  if (isMemberReportModalCustomId(interaction.data.custom_id)) {
+    return handleMemberReportModalSubmit(interaction, env);
+  }
+
+  if (isMemberReportCorrectionModalCustomId(interaction.data.custom_id)) {
+    return handleMemberReportCorrectionModalSubmit(interaction, env);
+  }
+
   if (isFilmRequestReviewModalCustomId(interaction.data.custom_id)) {
     return handleFilmRequestReviewModalSubmit(interaction, env);
   }

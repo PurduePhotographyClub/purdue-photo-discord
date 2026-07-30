@@ -19,6 +19,7 @@ import { equipmentCommand } from '../src/commands/general/equipment';
 import { healthCommand } from '../src/commands/general/health';
 import { merchCommand } from '../src/commands/general/merch';
 import { newsletterCommand } from '../src/commands/general/newsletter';
+import { reportCommand } from '../src/commands/general/report';
 import { wikiCommand } from '../src/commands/general/wiki';
 import type {
   DiscordApplicationCommandDefinition,
@@ -37,6 +38,7 @@ export const commands = [
   keyCommand,
   merchCommand,
   newsletterCommand,
+  reportCommand,
   statusCommand,
   studioMessageCommand,
   verifyMessageCommand,

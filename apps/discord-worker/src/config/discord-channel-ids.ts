@@ -4,6 +4,7 @@ export const DISCORD_CHANNEL_IDS = {
   honeypot: '1519110560925483008',
   honeypotSafe: '1524160150624010331',
   jobs101: '1512507610186907648',
+  memberReports: '1532401078828535919',
   photographerRequestsIndividual: '1512507940303671546',
   photographerRequestsOrganization: '1512508172139499670',
   verification: '1512506154079486004',

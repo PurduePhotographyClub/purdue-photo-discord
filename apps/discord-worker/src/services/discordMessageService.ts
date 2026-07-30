@@ -119,13 +119,21 @@ export async function sendDiscordMessage(
       method: 'POST',
     });
   } catch (error) {
-    if (!nonce || error instanceof DiscordApiError) throw error;
-    const existingMessage = await findRecentMessageByNonce(
-      env,
-      channelId,
-      nonce,
-    );
-    if (existingMessage) return existingMessage;
+    if (!nonce) throw error;
+    try {
+      const existingMessage = await findRecentMessageByNonce(
+        env,
+        channelId,
+        nonce,
+      );
+      if (existingMessage) return existingMessage;
+    } catch (reconciliationError) {
+      // API errors are authoritative. For ambiguous network failures, keep the
+      // reconciliation result so callers can still detect a missing channel.
+      if (!(error instanceof DiscordApiError)) {
+        throw reconciliationError;
+      }
+    }
     throw error;
   }
 }
