@@ -35,6 +35,7 @@ const PARAGRAPH_TEXT = 2;
 const LABEL = 18;
 const REPORT_NAME_CUSTOM_ID = 'member_report_name';
 const REPORT_BEHAVIOR_CUSTOM_ID = 'member_report_behavior';
+const REPORT_REASON_CUSTOM_ID = 'member_report_reason';
 const CORRECT_MEMBER_CUSTOM_ID = 'member_report_correct_user';
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -128,7 +129,8 @@ export async function handleMemberReportModalSubmit(
   const values = readModalValues(interaction);
   const reportedName = readModalString(values.get(REPORT_NAME_CUSTOM_ID));
   const behavior = readModalString(values.get(REPORT_BEHAVIOR_CUSTOM_ID));
-  const validationError = validateReportInput(reportedName, behavior);
+  const reason = readModalString(values.get(REPORT_REASON_CUSTOM_ID));
+  const validationError = validateReportInput(reportedName, behavior, reason);
   if (validationError) {
     return ephemeralResponse(validationError);
   }
@@ -138,7 +140,7 @@ export async function handleMemberReportModalSubmit(
       env,
       '/member-reports/by-discord',
       {
-        body: { behavior, discordId, interactionId, reportedName },
+        body: { behavior, discordId, interactionId, reason, reportedName },
         method: 'POST',
       },
     );
@@ -328,6 +330,16 @@ function createMemberReportModalPayload() {
         placeholder: 'Describe what happened and include useful context',
         style: PARAGRAPH_TEXT,
       }),
+      createTextInputLabel({
+        customId: REPORT_REASON_CUSTOM_ID,
+        description:
+          'Add anything that would help the Executive team review it.',
+        label: 'Reason (optional)',
+        maxLength: 500,
+        placeholder: 'Explain why you are reporting this',
+        required: false,
+        style: PARAGRAPH_TEXT,
+      }),
     ],
     custom_id: MEMBER_REPORT_MODAL_CUSTOM_ID,
     title: 'Report member behaviour',
@@ -339,19 +351,22 @@ function createTextInputLabel(options: {
   description: string;
   label: string;
   maxLength: number;
-  minLength: number;
+  minLength?: number;
   placeholder: string;
+  required?: boolean;
   style: number;
 }) {
   return {
     component: {
       custom_id: options.customId,
       max_length: options.maxLength,
-      min_length: options.minLength,
       placeholder: options.placeholder,
-      required: true,
+      required: options.required ?? true,
       style: options.style,
       type: INPUT_TEXT,
+      ...(options.minLength !== undefined
+        ? { min_length: options.minLength }
+        : {}),
     },
     description: options.description,
     label: options.label,
@@ -382,6 +397,16 @@ function createMemberReportCorrectionModalPayload(reportId: string) {
 }
 
 function createMemberReportMessagePayload(projection: MemberReportProjection) {
+  const reason = projection.reason?.trim();
+  const reasonField = reason
+    ? [
+        {
+          inline: false,
+          name: 'Reason',
+          value: reason,
+        },
+      ]
+    : [];
   const submittedNameField =
     projection.submittedName.localeCompare(projection.reportedName, undefined, {
       sensitivity: 'accent',
@@ -414,6 +439,7 @@ function createMemberReportMessagePayload(projection: MemberReportProjection) {
         value: getMatchMethodLabel(projection.matchMethod),
       },
       ...submittedNameField,
+      ...reasonField,
     ],
     footer: {
       text: `Anonymous report ${projection.reportId}`,
@@ -528,6 +554,7 @@ function createMemberReportNonce(reportId: string): string {
 function validateReportInput(
   reportedName: string | null,
   behavior: string | null,
+  reason: string | null,
 ): string | undefined {
   if (!reportedName || reportedName.length < 2 || reportedName.length > 120) {
     return 'Enter a member name between 2 and 120 characters.';
@@ -537,7 +564,15 @@ function validateReportInput(
     return 'Describe what happened in 20 to 2,000 characters.';
   }
 
+  if (reason && countUnicodeCharacters(reason) > 500) {
+    return 'Keep the optional reason to 500 characters or fewer.';
+  }
+
   return undefined;
+}
+
+function countUnicodeCharacters(value: string): number {
+  return Array.from(value).length;
 }
 
 function hasPpcMemberRole(interaction: {

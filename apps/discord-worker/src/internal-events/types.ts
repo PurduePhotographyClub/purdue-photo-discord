@@ -225,6 +225,7 @@ export interface MemberReportProjection {
   behavior: string;
   matchMethod: 'exact' | 'manual' | 'similar' | 'unmatched';
   messageId?: string | null;
+  reason: string | null;
   relatedReportCount: number;
   reportId: string;
   reportedName: string;

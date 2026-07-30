@@ -193,6 +193,7 @@ export function parseMemberReportProjection(
   const reportedName = readString(payload, 'reportedName');
   const submittedName = readString(payload, 'submittedName');
   const behavior = readString(payload, 'behavior');
+  const reason = readNullableString(payload, 'reason') ?? null;
   const relatedReportCount = readInteger(payload, 'relatedReportCount');
   const matchMethod = readString(payload, 'matchMethod');
   const submittedAt = readString(payload, 'submittedAt');
@@ -228,6 +229,12 @@ export function parseMemberReportProjection(
     );
   }
 
+  if (reason !== null && countUnicodeCharacters(reason) > 500) {
+    throw new BadRequestError(
+      'Member report reason cannot exceed 500 characters.',
+    );
+  }
+
   if (relatedReportCount === null || relatedReportCount < 1) {
     throw new BadRequestError(
       'Member report relatedReportCount must be at least 1.',
@@ -252,6 +259,7 @@ export function parseMemberReportProjection(
   return {
     behavior,
     matchMethod,
+    reason,
     relatedReportCount,
     reportId,
     reportedName,
@@ -260,6 +268,10 @@ export function parseMemberReportProjection(
     type: 'website.member_report.sync',
     ...(messageId !== undefined ? { messageId } : {}),
   };
+}
+
+function countUnicodeCharacters(value: string): number {
+  return Array.from(value).length;
 }
 
 function parseDarkroomStatsEvent(

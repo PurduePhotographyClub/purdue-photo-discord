@@ -19,7 +19,10 @@ import type {
   ModalSubmitInteraction,
 } from '../discord/types';
 import { dispatchInternalEvent } from '../internal-events/dispatcher';
-import { parseInternalEvent } from '../internal-events/parser';
+import {
+  parseInternalEvent,
+  parseMemberReportProjection,
+} from '../internal-events/parser';
 import {
   deferDiscordInteraction,
   shouldDeferDiscordInteraction,
@@ -89,6 +92,19 @@ test('/report opens the anonymous report modal for PPC members', async () => {
       label: 'What happened?',
       type: 18,
     },
+    {
+      component: {
+        custom_id: 'member_report_reason',
+        max_length: 500,
+        placeholder: 'Explain why you are reporting this',
+        required: false,
+        style: 2,
+        type: 4,
+      },
+      description: 'Add anything that would help the Executive team review it.',
+      label: 'Reason (optional)',
+      type: 18,
+    },
   ]);
   assert.equal(shouldDeferDiscordInteraction(commandInteraction()), false);
 });
@@ -149,6 +165,7 @@ test('report submission remains anonymous while refreshing all matched messages'
       'They repeatedly insulted another member during the club meeting.',
     discordId: ACTOR_DISCORD_ID,
     interactionId: INTERACTION_ID,
+    reason: 'This has happened at several club meetings.',
     reportedName: 'Alex Smith',
   });
   assert.equal(
@@ -183,6 +200,45 @@ test('report submission remains anonymous while refreshing all matched messages'
   assert.equal(
     response.data?.content,
     'Your report was submitted anonymously. The Executive team can review it now.',
+  );
+});
+
+test('report submission sends an omitted optional reason as null', async () => {
+  const apiRequests: Request[] = [];
+  globalThis.fetch = createDiscordFetch([]);
+  const report = projection({ messageId: null, reason: null });
+
+  await handleMemberReportModalSubmit(
+    reportModalInteraction([MEMBER_ROLE_ID], null),
+    createApiEnv(apiRequests, (request) => {
+      const pathname = new URL(request.url).pathname;
+      return pathname === '/api/v1/member-reports/by-discord'
+        ? Response.json({ ok: true, report, reports: [report] })
+        : Response.json({ ok: true });
+    }),
+  );
+
+  assert.deepEqual(await apiRequests[0]!.clone().json(), {
+    behavior:
+      'They repeatedly insulted another member during the club meeting.',
+    discordId: ACTOR_DISCORD_ID,
+    interactionId: INTERACTION_ID,
+    reason: null,
+    reportedName: 'Alex Smith',
+  });
+});
+
+test('report submission rejects a reason longer than 500 Unicode characters', async () => {
+  const apiRequests: Request[] = [];
+  const response = await handleMemberReportModalSubmit(
+    reportModalInteraction([MEMBER_ROLE_ID], '🙂'.repeat(501)),
+    createApiEnv(apiRequests, () => Response.json({ ok: true })),
+  );
+
+  assert.equal(apiRequests.length, 0);
+  assert.equal(
+    response.data?.content,
+    'Keep the optional reason to 500 characters or fewer.',
   );
 });
 
@@ -258,6 +314,42 @@ test('report embeds use gold, orange, and red as matching report counts rise', a
   }
 
   assert.deepEqual(colors, [0xf2c94c, 0xf97316, 0xef4444, 0xef4444]);
+});
+
+test('report embeds show a non-inline reason only when one is provided', async () => {
+  const embedFields: Array<
+    Array<{ inline?: boolean; name: string; value: string }>
+  > = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      embeds: Array<{
+        fields: Array<{ inline?: boolean; name: string; value: string }>;
+      }>;
+    };
+    embedFields.push(body.embeds[0]!.fields);
+    return Response.json({ id: '523456789012345678' });
+  };
+
+  await postMemberReportMessage(
+    createEnv(),
+    projection({ reason: '  The same conduct has happened before.  ' }),
+  );
+  await postMemberReportMessage(createEnv(), projection({ reason: null }));
+
+  assert.deepEqual(
+    embedFields[0]!.filter(({ name }) => name === 'Reason'),
+    [
+      {
+        inline: false,
+        name: 'Reason',
+        value: 'The same conduct has happened before.',
+      },
+    ],
+  );
+  assert.deepEqual(
+    embedFields[1]!.filter(({ name }) => name === 'Reason'),
+    [],
+  );
 });
 
 test('the internal report event has a dedicated parser and persists new messages', async () => {
@@ -441,6 +533,36 @@ test('invalid report sync events are rejected before dispatch', () => {
       ),
     /matchMethod is invalid/,
   );
+  const missingReason = projection();
+  delete (missingReason as { reason?: string | null }).reason;
+  assert.equal(parseMemberReportProjection(missingReason).reason, null);
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...projection(),
+        reason: 42,
+      }),
+    /reason must be a string/,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent(
+        projection({
+          reason: '🙂'.repeat(501),
+        }),
+      ),
+    /reason cannot exceed 500 characters/,
+  );
+  assert.equal(
+    parseMemberReportProjection(projection({ reason: '  Useful context.  ' }))
+      .reason,
+    'Useful context.',
+  );
+  assert.equal(
+    parseMemberReportProjection(projection({ reason: '🙂'.repeat(500) }))
+      .reason,
+    '🙂'.repeat(500),
+  );
 });
 
 test('only Executive members can open match correction', async () => {
@@ -595,6 +717,7 @@ function projection(
     behavior: string;
     matchMethod: 'exact' | 'manual' | 'similar' | 'unmatched';
     messageId: null | string;
+    reason: null | string;
     relatedReportCount: number;
     reportId: string;
     reportedName: string;
@@ -608,6 +731,10 @@ function projection(
       'They repeatedly insulted another member during the club meeting.',
     matchMethod: overrides.matchMethod ?? 'similar',
     messageId: overrides.messageId === undefined ? null : overrides.messageId,
+    reason:
+      overrides.reason === undefined
+        ? 'This has happened at several club meetings.'
+        : overrides.reason,
     relatedReportCount: overrides.relatedReportCount ?? 1,
     reportId: overrides.reportId ?? REPORT_ID,
     reportedName: overrides.reportedName ?? 'Alex Smith',
@@ -636,7 +763,21 @@ function componentInteraction(customId: string, roles: string[] = []) {
   } as ComponentInteraction;
 }
 
-function reportModalInteraction(roles: string[] = []) {
+function reportModalInteraction(
+  roles: string[] = [],
+  reason: string | null = '  This has happened at several club meetings.  ',
+) {
+  const reasonComponents =
+    reason === null
+      ? []
+      : [
+          {
+            component: {
+              custom_id: 'member_report_reason',
+              value: reason,
+            },
+          },
+        ];
   return {
     application_id: '623456789012345678',
     data: {
@@ -654,6 +795,7 @@ function reportModalInteraction(roles: string[] = []) {
               'They repeatedly insulted another member during the club meeting.',
           },
         },
+        ...reasonComponents,
       ],
       custom_id: MEMBER_REPORT_MODAL_CUSTOM_ID,
     },
