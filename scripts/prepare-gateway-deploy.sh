@@ -10,6 +10,7 @@ if [ -z "$DEPLOY_DIR" ] || [ "$DEPLOY_DIR" = "/" ]; then
   exit 1
 fi
 
+rm -rf "$GATEWAY_DIR/dist"
 npm run build:gateway
 
 mkdir -p "$DEPLOY_DIR"
