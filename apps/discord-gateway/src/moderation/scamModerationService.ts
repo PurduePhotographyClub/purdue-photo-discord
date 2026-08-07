@@ -37,6 +37,7 @@ export type ScamModerationActionId =
   | 'add_restricted_role'
   | 'delete_message'
   | 'remove_verified_role'
+  | 'send_public_announcement'
   | 'send_alert';
 
 export interface ScamModerationAlert {
@@ -63,6 +64,7 @@ export interface ScamModerationActions {
     userId: string,
     roleId: string,
   ) => Promise<void>;
+  sendPublicAnnouncement: (channelId: string, content: string) => Promise<void>;
   sendAlert: (
     alertChannelId: string,
     alert: ScamModerationAlert,
@@ -85,12 +87,16 @@ export interface ScamModerationService {
 }
 
 const DEDUPLICATION_TTL_MS = 10 * 60 * 1_000;
+const ANNOUNCEMENT_COOLDOWN_MS = 30 * 1_000;
 const MAX_DEDUPLICATION_ENTRIES = 2_000;
+const MAX_ANNOUNCEMENT_CHANNEL_ENTRIES = 500;
+const PUBLIC_ANNOUNCEMENT_COPY = '🚨 Likely scam removed. Nice try. 🤡';
 
 export function createScamModerationService(
   config: ScamModerationConfig,
 ): ScamModerationService {
   let recentMessageIds: ReadonlyMap<string, number> = new Map();
+  let recentAnnouncementChannelIds: ReadonlyMap<string, number> = new Map();
 
   return {
     async moderate(message, actions) {
@@ -136,14 +142,19 @@ export function createScamModerationService(
       ) => {
         try {
           await action();
+          return true;
         } catch {
           failedActions = [...failedActions, actionId];
+          return false;
         }
       };
 
-      await runAction('delete_message', () =>
+      const messageDeleted = await runAction('delete_message', () =>
         actions.deleteMessage(message.channelId, message.messageId),
       );
+      if (!messageDeleted) {
+        recentMessageIds = releaseClaim(recentMessageIds, message.messageId);
+      }
 
       if (!message.protectedMember) {
         if (message.roleIds.includes(config.verifiedRoleId)) {
@@ -162,6 +173,26 @@ export function createScamModerationService(
               config.guildId,
               message.userId,
               config.restrictedRoleId,
+            ),
+          );
+        }
+      }
+
+      if (messageDeleted && !message.protectedMember) {
+        const announcementClaim = claimExpiringKey(
+          recentAnnouncementChannelIds,
+          message.channelId,
+          message.observedAtTimestamp,
+          ANNOUNCEMENT_COOLDOWN_MS,
+          MAX_ANNOUNCEMENT_CHANNEL_ENTRIES,
+        );
+        recentAnnouncementChannelIds = announcementClaim.nextEntries;
+
+        if (announcementClaim.claimed) {
+          await runAction('send_public_announcement', () =>
+            actions.sendPublicAnnouncement(
+              message.channelId,
+              PUBLIC_ANNOUNCEMENT_COPY,
             ),
           );
         }
@@ -227,24 +258,41 @@ function claimMessageId(
   messageId: string,
   now: number,
 ) {
+  return claimExpiringKey(
+    entries,
+    messageId,
+    now,
+    DEDUPLICATION_TTL_MS,
+    MAX_DEDUPLICATION_ENTRIES,
+  );
+}
+
+function claimExpiringKey(
+  entries: ReadonlyMap<string, number>,
+  key: string,
+  now: number,
+  ttlMs: number,
+  maxEntries: number,
+) {
   const activeEntries = [...entries].filter(([, expiresAt]) => expiresAt > now);
   const activeMap = new Map(activeEntries);
-  if (activeMap.has(messageId)) {
+  if (activeMap.has(key)) {
     return { claimed: false, nextEntries: activeMap };
   }
 
   const boundedEntries =
-    activeMap.size >= MAX_DEDUPLICATION_ENTRIES
+    activeMap.size >= maxEntries
       ? [...activeMap]
           .sort((left, right) => left[1] - right[1])
-          .slice(activeMap.size - MAX_DEDUPLICATION_ENTRIES + 1)
+          .slice(activeMap.size - maxEntries + 1)
       : [...activeMap];
 
   return {
     claimed: true,
-    nextEntries: new Map([
-      ...boundedEntries,
-      [messageId, now + DEDUPLICATION_TTL_MS] as const,
-    ]),
+    nextEntries: new Map([...boundedEntries, [key, now + ttlMs] as const]),
   };
+}
+
+function releaseClaim(entries: ReadonlyMap<string, number>, key: string) {
+  return new Map([...entries].filter(([entryKey]) => entryKey !== key));
 }

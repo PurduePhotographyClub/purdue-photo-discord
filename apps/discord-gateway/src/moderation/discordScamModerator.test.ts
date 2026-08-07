@@ -26,7 +26,14 @@ test('validates Discord roles before deleting and quarantining a scam message', 
     `delete:${MESSAGE_ID}`,
     `remove:${VERIFIED_ROLE_ID}`,
     `add:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
     `alert:${ALERT_CHANNEL_ID}`,
+  ]);
+  assert.deepEqual(fixture.announcements, [
+    {
+      allowedMentions: { parse: [] },
+      content: '🚨 Likely scam removed. Nice try. 🤡',
+    },
   ]);
   assert.doesNotMatch(fixture.alerts.join('\n'), /MacBook|WhatsApp|346/u);
   assert.match(fixture.alerts[0] ?? '', /giveaway scam detected/u);
@@ -50,6 +57,47 @@ test('disables moderation when the Clown role gains guild permissions', async ()
   assert.deepEqual(errors, ['Scam moderation failed its startup checks.']);
 });
 
+test('does not announce when Discord returns a non-message 404', async () => {
+  const calls: string[] = [];
+  const fixture = createDiscordFixture(calls, {
+    deleteError: { code: 10_003, status: 404 },
+  });
+  const moderator = createDiscordScamModerator(createConfig(), createLogger());
+
+  await moderator.initialize(fixture.client);
+  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+
+  assert.deepEqual(calls, [
+    `delete:${MESSAGE_ID}`,
+    `remove:${VERIFIED_ROLE_ID}`,
+    `add:${SCAM_ROLE_ID}`,
+    `alert:${ALERT_CHANNEL_ID}`,
+  ]);
+  assert.equal(moderator.getHealth().lastFailure, 'delete_message');
+  assert.match(fixture.alerts[0] ?? '', /Partial action: delete_message/u);
+});
+
+test('reports a protected member deletion failure accurately', async () => {
+  const calls: string[] = [];
+  const fixture = createDiscordFixture(calls, {
+    deleteError: new Error('Temporary Discord failure'),
+    protectedMember: true,
+  });
+  const moderator = createDiscordScamModerator(createConfig(), createLogger());
+
+  await moderator.initialize(fixture.client);
+  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+
+  assert.deepEqual(calls, [
+    `delete:${MESSAGE_ID}`,
+    `alert:${ALERT_CHANNEL_ID}`,
+  ]);
+  assert.match(
+    fixture.alerts[0] ?? '',
+    /Deletion failed; protected member roles unchanged; review required/u,
+  );
+});
+
 function createConfig(): GatewayScamModerationConfig {
   return {
     alertChannelId: ALERT_CHANNEL_ID,
@@ -64,9 +112,17 @@ function createConfig(): GatewayScamModerationConfig {
 
 function createDiscordFixture(
   calls: string[],
-  options: { restrictedPermissions?: bigint } = {},
+  options: {
+    deleteError?: unknown;
+    protectedMember?: boolean;
+    restrictedPermissions?: bigint;
+  } = {},
 ) {
   const alerts: string[] = [];
+  const announcements: Array<{
+    allowedMentions: { parse: string[] };
+    content: string;
+  }> = [];
   const restrictedRole = {
     id: SCAM_ROLE_ID,
     managed: false,
@@ -82,7 +138,7 @@ function createDiscordFixture(
   const member = {
     id: USER_ID,
     joinedTimestamp: Date.now() - 90 * 24 * 60 * 60 * 1_000,
-    permissions: { has: () => false },
+    permissions: { has: () => options.protectedMember ?? false },
     roles: {
       add: async (roleId: string) => {
         calls.push(`add:${roleId}`);
@@ -110,9 +166,18 @@ function createDiscordFixture(
     channels: {
       fetch: async (channelId: string) => ({
         isSendable: () => true,
-        send: async (payload: { content: string }) => {
-          calls.push(`alert:${channelId}`);
-          alerts.push(payload.content);
+        send: async (payload: {
+          allowedMentions: { parse: string[] };
+          content: string;
+        }) => {
+          if (channelId === ALERT_CHANNEL_ID) {
+            calls.push(`alert:${channelId}`);
+            alerts.push(payload.content);
+            return;
+          }
+
+          calls.push(`announce:${channelId}`);
+          announcements.push(payload);
         },
       }),
     },
@@ -129,6 +194,9 @@ function createDiscordFixture(
       '@everyone Giving out my MacBook and Canon camera for free. First come first serve. DM if interested on WhatsApp +1 (346) 383-3280.',
     delete: async () => {
       calls.push(`delete:${MESSAGE_ID}`);
+      if (options.deleteError) {
+        throw options.deleteError;
+      }
     },
     guild,
     guildId: GUILD_ID,
@@ -140,7 +208,7 @@ function createDiscordFixture(
     webhookId: null,
   } as unknown as Message;
 
-  return { alerts, client, message };
+  return { alerts, announcements, client, message };
 }
 
 function createLogger(errorMessages: string[] = []): Logger {

@@ -332,6 +332,27 @@ function createModerationActions(input: {
       }
     },
 
+    async sendPublicAnnouncement(channelId, content) {
+      try {
+        const sourceChannel = await client.channels.fetch(channelId);
+        if (!sourceChannel?.isSendable()) {
+          throw new Error('The source channel is not sendable.');
+        }
+
+        await sourceChannel.send({
+          allowedMentions: { parse: [] },
+          content,
+        });
+      } catch (error) {
+        logger.warn('Could not send the public scam announcement.', {
+          channelId,
+          error,
+          messageId: message.id,
+        });
+        throw error;
+      }
+    },
+
     async sendAlert(alertChannelId, alert) {
       try {
         const alertChannel = await client.channels.fetch(alertChannelId);
@@ -388,11 +409,14 @@ async function assertModerationConfigurationSafe(
 }
 
 function formatModerationAlert(alert: ScamModerationAlert) {
-  const outcome = alert.protectedMember
-    ? 'Protected member: message deleted; roles unchanged pending review.'
-    : alert.failedActions.length > 0
-      ? `Partial action: ${alert.failedActions.join(', ')} needs review.`
-      : 'Message deleted; verified removed when present; Clown added.';
+  const outcome =
+    alert.protectedMember && alert.failedActions.includes('delete_message')
+      ? 'Deletion failed; protected member roles unchanged; review required.'
+      : alert.protectedMember
+        ? 'Protected member: message deleted; roles unchanged pending review.'
+        : alert.failedActions.length > 0
+          ? `Partial action: ${alert.failedActions.join(', ')} needs review.`
+          : 'Message deleted; verified removed when present; Clown added.';
 
   return [
     '**Probable giveaway scam detected**',
@@ -411,7 +435,7 @@ function isUnknownMessageError(error: unknown) {
     return false;
   }
 
-  return error.code === 10_008 || error.status === 404;
+  return error.code === 10_008;
 }
 
 function getErrorMessage(error: unknown) {

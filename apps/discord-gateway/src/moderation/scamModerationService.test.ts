@@ -14,12 +14,27 @@ const SCAM_ROLE_ID = '1515784633374212247';
 const VERIFIED_ROLE_ID = '1503180707550199920';
 const ALERT_CHANNEL_ID = '1232870129000386620';
 const NOW = Date.UTC(2026, 7, 7, 22, 19, 0);
+const PUBLIC_ANNOUNCEMENT_COPY = '🚨 Likely scam removed. Nice try. 🤡';
 
-test('deletes the supplied scam, removes verified, adds Clown, and alerts moderators', async () => {
+interface PublicAnnouncementCall {
+  channelId: string;
+  content: string;
+}
+
+type ScamModerationActionsWithAnnouncement = ScamModerationActions & {
+  sendPublicAnnouncement: (channelId: string, content: string) => Promise<void>;
+};
+
+test('deletes the supplied scam, posts the generic public announcement, removes verified, adds Clown, and alerts moderators', async () => {
   const calls: string[] = [];
+  const announcements: PublicAnnouncementCall[] = [];
   const service = createService();
 
-  const result = await service.moderate(createMessage(), createActions(calls));
+  const message = createMessage();
+  const result = await service.moderate(
+    message,
+    createActions(calls, {}, announcements),
+  );
 
   assert.equal(result.handled, true);
   assert.equal(result.duplicate, false);
@@ -27,8 +42,19 @@ test('deletes the supplied scam, removes verified, adds Clown, and alerts modera
     `delete:${CHANNEL_ID}:${MESSAGE_ID}`,
     `remove:${GUILD_ID}:${USER_ID}:${VERIFIED_ROLE_ID}`,
     `add:${GUILD_ID}:${USER_ID}:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
     `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
   ]);
+  assert.deepEqual(announcements, [
+    {
+      channelId: CHANNEL_ID,
+      content: PUBLIC_ANNOUNCEMENT_COPY,
+    },
+  ]);
+  assert.equal(PUBLIC_ANNOUNCEMENT_COPY.includes(USER_ID), false);
+  assert.equal(PUBLIC_ANNOUNCEMENT_COPY.includes(MESSAGE_ID), false);
+  assert.equal(PUBLIC_ANNOUNCEMENT_COPY.includes(message.content), false);
+  assert.doesNotMatch(PUBLIC_ANNOUNCEMENT_COPY, /@(?:everyone|here)|<@/i);
   assert.deepEqual(result.failedActions, []);
 });
 
@@ -44,6 +70,7 @@ test('quarantines edited scams and deduplicates repeated events by message ID', 
   assert.equal(duplicate.handled, true);
   assert.equal(duplicate.duplicate, true);
   assert.equal(calls.filter((call) => call.startsWith('alert:')).length, 1);
+  assert.equal(calls.filter((call) => call.startsWith('announce:')).length, 1);
   assert.equal(calls.filter((call) => call.startsWith('delete:')).length, 1);
 });
 
@@ -70,7 +97,7 @@ test('does not moderate bots, webhooks, system messages, DMs, other guilds, or e
   }
 });
 
-test('deletes protected staff scams but leaves staff roles unchanged', async () => {
+test('deletes protected staff scams without a public callout or role changes', async () => {
   const calls: string[] = [];
   const result = await createService().moderate(
     createMessage({ protectedMember: true }),
@@ -96,8 +123,158 @@ test('does not remove verified when the member does not have it', async () => {
   assert.deepEqual(calls, [
     `delete:${CHANNEL_ID}:${MESSAGE_ID}`,
     `add:${GUILD_ID}:${USER_ID}:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
     `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
   ]);
+});
+
+test('waits for confirmed deletion before announcing in the deleted message channel', async () => {
+  const calls: string[] = [];
+  const announcements: PublicAnnouncementCall[] = [];
+  let confirmDeletion: (() => void) | undefined;
+  const deletionConfirmed = new Promise<void>((resolve) => {
+    confirmDeletion = resolve;
+  });
+  const baseActions = createActions(calls, {}, announcements);
+  const actions: ScamModerationActionsWithAnnouncement = {
+    ...baseActions,
+    deleteMessage: async (channelId, messageId) => {
+      calls.push(`delete:${channelId}:${messageId}`);
+      await deletionConfirmed;
+    },
+  };
+
+  const moderation = createService().moderate(createMessage(), actions);
+
+  assert.deepEqual(calls, [`delete:${CHANNEL_ID}:${MESSAGE_ID}`]);
+  assert.deepEqual(announcements, []);
+
+  assert.ok(confirmDeletion);
+  confirmDeletion();
+  await moderation;
+
+  assert.deepEqual(announcements, [
+    {
+      channelId: CHANNEL_ID,
+      content: PUBLIC_ANNOUNCEMENT_COPY,
+    },
+  ]);
+});
+
+test('announces when deletion reports that the scam message was already gone', async () => {
+  const calls: string[] = [];
+  const announcements: PublicAnnouncementCall[] = [];
+  const baseActions = createActions(calls, {}, announcements);
+  const actions: ScamModerationActionsWithAnnouncement = {
+    ...baseActions,
+    deleteMessage: async (channelId, messageId) => {
+      calls.push(`delete-already-gone:${channelId}:${messageId}`);
+    },
+  };
+
+  const result = await createService().moderate(createMessage(), actions);
+
+  assert.equal(result.handled, true);
+  assert.deepEqual(calls, [
+    `delete-already-gone:${CHANNEL_ID}:${MESSAGE_ID}`,
+    `remove:${GUILD_ID}:${USER_ID}:${VERIFIED_ROLE_ID}`,
+    `add:${GUILD_ID}:${USER_ID}:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
+    `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
+  ]);
+});
+
+test('retries the same scam message after a transient deletion failure', async () => {
+  const calls: string[] = [];
+  let deletionAttempts = 0;
+  const baseActions = createActions(calls);
+  const actions: ScamModerationActionsWithAnnouncement = {
+    ...baseActions,
+    deleteMessage: async (channelId, messageId) => {
+      deletionAttempts += 1;
+      calls.push(`delete:${channelId}:${messageId}`);
+      if (deletionAttempts === 1) {
+        throw new Error('Temporary Discord failure');
+      }
+    },
+  };
+  const service = createService();
+
+  const first = await service.moderate(createMessage(), actions);
+  const retry = await service.moderate(createMessage(), actions);
+
+  assert.equal(first.failedActions.includes('delete_message'), true);
+  assert.equal(retry.duplicate, false);
+  assert.equal(deletionAttempts, 2);
+  assert.equal(calls.filter((call) => call.startsWith('announce:')).length, 1);
+});
+
+test('limits public announcements to one per channel every 30 seconds', async () => {
+  const calls: string[] = [];
+  const announcements: PublicAnnouncementCall[] = [];
+  const service = createService();
+  const actions = createActions(calls, {}, announcements);
+
+  await service.moderate(createMessage(), actions);
+  await service.moderate(
+    createMessage({
+      messageId: '1535080862603808809',
+      observedAtTimestamp: NOW + 1_000,
+      userId: '1351727646211313785',
+    }),
+    actions,
+  );
+  await service.moderate(
+    createMessage({
+      messageId: '1535080862603808810',
+      observedAtTimestamp: NOW + 31_000,
+      userId: '1351727646211313786',
+    }),
+    actions,
+  );
+
+  assert.equal(calls.filter((call) => call.startsWith('delete:')).length, 3);
+  assert.equal(announcements.length, 2);
+});
+
+test('announcement failure does not prevent role actions or the moderator alert', async () => {
+  const calls: string[] = [];
+  const actions = createActions(calls, {
+    sendPublicAnnouncement: new Error('Missing Send Messages permission'),
+  });
+
+  const result = await createService().moderate(createMessage(), actions);
+
+  assert.equal(result.handled, true);
+  assert.deepEqual(calls, [
+    `delete:${CHANNEL_ID}:${MESSAGE_ID}`,
+    `remove:${GUILD_ID}:${USER_ID}:${VERIFIED_ROLE_ID}`,
+    `add:${GUILD_ID}:${USER_ID}:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
+    `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
+  ]);
+  assert.deepEqual(result.failedActions, ['send_public_announcement']);
+});
+
+test('keeps the channel cooldown after a failed announcement attempt', async () => {
+  const calls: string[] = [];
+  const service = createService();
+  const actions = createActions(calls, {
+    sendPublicAnnouncement: new Error('Discord rate limited the send'),
+  });
+
+  await service.moderate(createMessage(), actions);
+  await service.moderate(
+    createMessage({
+      messageId: '1535080862603808809',
+      observedAtTimestamp: NOW + 1_000,
+      userId: '1351727646211313785',
+    }),
+    actions,
+  );
+
+  assert.equal(calls.filter((call) => call.startsWith('delete:')).length, 2);
+  assert.equal(calls.filter((call) => call.startsWith('announce:')).length, 1);
 });
 
 test('attempts every independent action and reports partial failures', async () => {
@@ -116,6 +293,10 @@ test('attempts every independent action and reports partial failures', async () 
     `add:${GUILD_ID}:${USER_ID}:${SCAM_ROLE_ID}`,
     `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
   ]);
+  assert.equal(
+    calls.some((call) => call.startsWith('announce:')),
+    false,
+  );
   assert.deepEqual(result.failedActions, [
     'delete_message',
     'add_restricted_role',
@@ -168,8 +349,11 @@ function createMessage(
 
 function createActions(
   calls: string[],
-  failures: Partial<Record<keyof ScamModerationActions, Error>> = {},
-): ScamModerationActions {
+  failures: Partial<
+    Record<keyof ScamModerationActionsWithAnnouncement, Error>
+  > = {},
+  announcements: PublicAnnouncementCall[] = [],
+): ScamModerationActionsWithAnnouncement {
   return {
     addRestrictedRole: async (guildId, userId, roleId) => {
       calls.push(`add:${guildId}:${userId}:${roleId}`);
@@ -182,6 +366,11 @@ function createActions(
     removeVerifiedRole: async (guildId, userId, roleId) => {
       calls.push(`remove:${guildId}:${userId}:${roleId}`);
       throwIfConfigured(failures.removeVerifiedRole);
+    },
+    sendPublicAnnouncement: async (channelId, content) => {
+      calls.push(`announce:${channelId}`);
+      announcements.push({ channelId, content });
+      throwIfConfigured(failures.sendPublicAnnouncement);
     },
     sendAlert: async (alertChannelId, alert) => {
       calls.push(`alert:${alertChannelId}:${alert.messageId}`);
