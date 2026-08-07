@@ -33,7 +33,7 @@ flowchart LR
 | Package | Runs on | Responsibility |
 | --- | --- | --- |
 | `apps/discord-worker` | Cloudflare Workers | Discord interactions, slash commands, signed Gateway events, API Worker calls, Discord REST messages |
-| `apps/discord-gateway` | VPS Node.js process | Persistent Discord Gateway session, presence, event filtering, and signed forwarding |
+| `apps/discord-gateway` | VPS Node.js process | Persistent Discord session, local scam quarantine, presence, event filtering, and signed forwarding |
 | `packages/shared` | Shared TypeScript package | Internal event contracts used by the Worker and Gateway |
 
 ## Workflow
@@ -63,6 +63,7 @@ sequenceDiagram
 | Dashboard sync | Website reports, studio requests, film request review, equipment workflows |
 | Verification | Discord server membership, account-age policy, website verification support |
 | Gateway events | Reaction/message/member forwarding when enabled for a deployment |
+| Scam quarantine | Local, scored giveaway-scam detection; deletes the message, removes verified access, adds Clown, and alerts moderators |
 | Security | Discord signature validation, signed Gateway events, nonce replay protection, minimal Gateway intents |
 
 ## Development

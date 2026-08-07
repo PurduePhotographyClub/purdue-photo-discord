@@ -39,7 +39,7 @@ cat > "$DEPLOY_DIR/package.json" <<'JSON'
     "start": "node --enable-source-maps dist/index.js"
   },
   "dependencies": {
-    "discord.js": "^14.26.4"
+    "discord.js": "^14.27.0"
   },
   "engines": {
     "node": ">=22"
