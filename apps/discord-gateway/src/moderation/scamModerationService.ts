@@ -47,6 +47,7 @@ export interface ScamModerationAlert {
   guildId: string;
   messageId: string;
   protectedMember: boolean;
+  reviewOnly: boolean;
   score: number;
   signalIds: readonly ScamSignalId[];
   userId: string;
@@ -112,7 +113,7 @@ export function createScamModerationService(
         observedAtTimestamp: message.observedAtTimestamp,
       });
 
-      if (!analysis.isLikelyScam) {
+      if (!analysis.isLikelyScam && !analysis.requiresReview) {
         return {
           ...ignoredResult(),
           analysis,
@@ -148,6 +149,38 @@ export function createScamModerationService(
           return false;
         }
       };
+
+      const sendAlert = () =>
+        config.alertChannelId
+          ? runAction('send_alert', () =>
+              actions.sendAlert(config.alertChannelId!, {
+                channelId: message.channelId,
+                eventType: message.eventType,
+                failedActions,
+                guildId: config.guildId,
+                messageId: message.messageId,
+                protectedMember: message.protectedMember,
+                reviewOnly: analysis.requiresReview,
+                score: analysis.score,
+                signalIds: analysis.signalIds,
+                userId: message.userId,
+              }),
+            )
+          : Promise.resolve(true);
+
+      if (analysis.requiresReview) {
+        const alertSent = await sendAlert();
+        if (!alertSent) {
+          recentMessageIds = releaseClaim(recentMessageIds, message.messageId);
+        }
+        return {
+          analysis,
+          duplicate: false,
+          failedActions,
+          handled: true,
+          protectedMember: message.protectedMember,
+        };
+      }
 
       const messageDeleted = await runAction('delete_message', () =>
         actions.deleteMessage(message.channelId, message.messageId),
@@ -198,21 +231,7 @@ export function createScamModerationService(
         }
       }
 
-      if (config.alertChannelId) {
-        await runAction('send_alert', () =>
-          actions.sendAlert(config.alertChannelId!, {
-            channelId: message.channelId,
-            eventType: message.eventType,
-            failedActions,
-            guildId: config.guildId,
-            messageId: message.messageId,
-            protectedMember: message.protectedMember,
-            score: analysis.score,
-            signalIds: analysis.signalIds,
-            userId: message.userId,
-          }),
-        );
-      }
+      await sendAlert();
 
       return {
         analysis,

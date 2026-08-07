@@ -12,6 +12,16 @@ const USER_ID = '1351727646211313784';
 const SCAM_ROLE_ID = '1515784633374212247';
 const VERIFIED_ROLE_ID = '1503180707550199920';
 const ALERT_CHANNEL_ID = '1232870129000386620';
+const REPORTED_TICKET_TEMPLATE = `Is this a scam? Someone sent me this:
+
+I have 4 amazing tickets for the Bruno Mars concert on Wed, Sep 9, 2026 at 7:00 PM at Lucas Oil Stadium.
+Unfortunately, I’m no longer able to attend, so I’m looking to sell the tickets to someone who can truly enjoy the show.
+You can take all 4 or just a pair.
+Message me if you’re interested: +1 (202) 555-0112`;
+const FACE_VALUE_COMPOUND_TICKET_SALE =
+  'I have two amazing Bruno Mars tickets because I am no longer able to attend, and I am looking for someone who can truly enjoy the show. You can take both or a pair. I am selling them for the $125 face value printed on my receipt. DM me here or call +1 (202) 555-0117 if you want them.';
+const WARNING_PREFIXED_TICKET_OFFER =
+  'Scam warning: Someone is selling four Bruno Mars tickets because they can no longer attend. They said to take all four or a pair and DM or call +1 (202) 555-0118.';
 
 test('validates Discord roles before deleting and quarantining a scam message', async () => {
   const calls: string[] = [];
@@ -35,8 +45,37 @@ test('validates Discord roles before deleting and quarantining a scam message', 
       content: '🚨 Likely scam removed. Nice try. 🤡',
     },
   ]);
-  assert.doesNotMatch(fixture.alerts.join('\n'), /MacBook|WhatsApp|346/u);
+  assert.doesNotMatch(fixture.alerts.join('\n'), /MacBook|WhatsApp|555-0109/u);
   assert.match(fixture.alerts[0] ?? '', /giveaway scam detected/u);
+});
+
+test('sends review-only ticket messages to the private alert without quarantine', async () => {
+  for (const content of [
+    REPORTED_TICKET_TEMPLATE,
+    FACE_VALUE_COMPOUND_TICKET_SALE,
+    WARNING_PREFIXED_TICKET_OFFER,
+  ]) {
+    const calls: string[] = [];
+    const fixture = createDiscordFixture(calls, {
+      content,
+      mentionsEveryone: false,
+    });
+    const moderator = createDiscordScamModerator(
+      createConfig(),
+      createLogger(),
+    );
+
+    await moderator.initialize(fixture.client);
+    await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+
+    assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}`], content);
+    assert.equal(moderator.getHealth().handledCount, 1);
+    assert.match(fixture.alerts[0] ?? '', /review/u);
+    assert.doesNotMatch(
+      fixture.alerts[0] ?? '',
+      /message deleted|clown added/u,
+    );
+  }
 });
 
 test('disables moderation when the Clown role gains guild permissions', async () => {
@@ -113,7 +152,9 @@ function createConfig(): GatewayScamModerationConfig {
 function createDiscordFixture(
   calls: string[],
   options: {
+    content?: string;
     deleteError?: unknown;
+    mentionsEveryone?: boolean;
     protectedMember?: boolean;
     restrictedPermissions?: bigint;
   } = {},
@@ -191,7 +232,8 @@ function createDiscordFixture(
     },
     channelId: CHANNEL_ID,
     content:
-      '@everyone Giving out my MacBook and Canon camera for free. First come first serve. DM if interested on WhatsApp +1 (346) 383-3280.',
+      options.content ??
+      '@everyone Giving out my MacBook and Canon camera for free. First come first serve. DM if interested on WhatsApp +1 (202) 555-0109.',
     delete: async () => {
       calls.push(`delete:${MESSAGE_ID}`);
       if (options.deleteError) {
@@ -202,7 +244,7 @@ function createDiscordFixture(
     guildId: GUILD_ID,
     id: MESSAGE_ID,
     member,
-    mentions: { everyone: true },
+    mentions: { everyone: options.mentionsEveryone ?? true },
     partial: false,
     system: false,
     webhookId: null,

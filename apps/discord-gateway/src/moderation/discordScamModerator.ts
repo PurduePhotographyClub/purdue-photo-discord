@@ -83,7 +83,10 @@ export function createDiscordScamModerator(
         mentionsEveryone: resolvedMessage.mentions.everyone,
         observedAtTimestamp: Date.now(),
       });
-      if (!preliminaryAnalysis.isLikelyScam) {
+      if (
+        !preliminaryAnalysis.isLikelyScam &&
+        !preliminaryAnalysis.requiresReview
+      ) {
         return;
       }
 
@@ -409,6 +412,22 @@ async function assertModerationConfigurationSafe(
 }
 
 function formatModerationAlert(alert: ScamModerationAlert) {
+  if (alert.reviewOnly) {
+    return [
+      '**Suspicious message needs moderator review**',
+      `User ID: ${alert.userId}`,
+      `Channel ID: ${alert.channelId}`,
+      `Message ID: ${alert.messageId}`,
+      `Event: ${alert.eventType}`,
+      `Score: ${alert.score}`,
+      `Signals: ${alert.signalIds.join(', ')}`,
+      'Result: No message or role action was taken.',
+    ].join('\n');
+  }
+
+  const title = alert.signalIds.includes('ticket_template_fingerprint')
+    ? '**Probable ticket scam detected**'
+    : '**Probable giveaway scam detected**';
   const outcome =
     alert.protectedMember && alert.failedActions.includes('delete_message')
       ? 'Deletion failed; protected member roles unchanged; review required.'
@@ -419,7 +438,7 @@ function formatModerationAlert(alert: ScamModerationAlert) {
           : 'Message deleted; verified removed when present; Clown added.';
 
   return [
-    '**Probable giveaway scam detected**',
+    title,
     `User ID: ${alert.userId}`,
     `Channel ID: ${alert.channelId}`,
     `Message ID: ${alert.messageId}`,

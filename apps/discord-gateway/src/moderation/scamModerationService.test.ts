@@ -15,6 +15,16 @@ const VERIFIED_ROLE_ID = '1503180707550199920';
 const ALERT_CHANNEL_ID = '1232870129000386620';
 const NOW = Date.UTC(2026, 7, 7, 22, 19, 0);
 const PUBLIC_ANNOUNCEMENT_COPY = '🚨 Likely scam removed. Nice try. 🤡';
+const REPORTED_TICKET_TEMPLATE = `Is this a scam? Someone sent me this:
+
+I have 4 amazing tickets for the Bruno Mars concert on Wed, Sep 9, 2026 at 7:00 PM at Lucas Oil Stadium.
+Unfortunately, I’m no longer able to attend, so I’m looking to sell the tickets to someone who can truly enjoy the show.
+You can take all 4 or just a pair.
+Message me if you’re interested: +1 (202) 555-0110`;
+const FACE_VALUE_COMPOUND_TICKET_SALE =
+  'I have two amazing Bruno Mars tickets because I am no longer able to attend, and I am looking for someone who can truly enjoy the show. You can take both or a pair. I am selling them for the $125 face value printed on my receipt. DM me here or call +1 (202) 555-0115 if you want them.';
+const WARNING_PREFIXED_TICKET_OFFER =
+  'Scam warning: Someone is selling four Bruno Mars tickets because they can no longer attend. They said to take all four or a pair and DM or call +1 (202) 555-0116.';
 
 interface PublicAnnouncementCall {
   channelId: string;
@@ -95,6 +105,80 @@ test('does not moderate bots, webhooks, system messages, DMs, other guilds, or e
     assert.equal(result.handled, false);
     assert.deepEqual(calls, []);
   }
+});
+
+test('privately alerts on review-only scam reports and face-value ticket pitches without quarantine', async () => {
+  const reviewOnlyMessages = [
+    createMessage({
+      content: REPORTED_TICKET_TEMPLATE,
+      mentionsEveryone: false,
+    }),
+    createMessage({
+      content:
+        'Scam warning: @everyone Giving away my MacBook for free because I upgraded. First come first served. DM me on WhatsApp at +1 (202) 555-0111.',
+    }),
+    createMessage({
+      content: FACE_VALUE_COMPOUND_TICKET_SALE,
+      mentionsEveryone: false,
+    }),
+    createMessage({
+      content: WARNING_PREFIXED_TICKET_OFFER,
+      mentionsEveryone: false,
+    }),
+  ];
+
+  for (const message of reviewOnlyMessages) {
+    const calls: string[] = [];
+    const result = await createService().moderate(
+      message,
+      createActions(calls),
+    );
+
+    assert.equal(result.handled, true);
+    assert.equal(result.analysis?.isLikelyScam, false);
+    assert.equal(result.analysis?.requiresReview, true);
+    assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`]);
+  }
+});
+
+test('retries review-only moderation when the private alert fails', async () => {
+  const calls: string[] = [];
+  let alertAttempts = 0;
+  const baseActions = createActions(calls);
+  const actions: ScamModerationActionsWithAnnouncement = {
+    ...baseActions,
+    sendAlert: async (alertChannelId, alert) => {
+      alertAttempts += 1;
+      calls.push(`alert:${alertChannelId}:${alert.messageId}`);
+      if (alertAttempts === 1) {
+        throw new Error('Temporary alert channel failure');
+      }
+    },
+  };
+  const service = createService();
+  const reviewMessage = createMessage({
+    content: REPORTED_TICKET_TEMPLATE,
+    mentionsEveryone: false,
+  });
+
+  const first = await service.moderate(reviewMessage, actions);
+  const retry = await service.moderate(
+    {
+      ...reviewMessage,
+      eventType: 'MESSAGE_UPDATE',
+      observedAtTimestamp: NOW + 1_000,
+    },
+    actions,
+  );
+
+  assert.deepEqual(first.failedActions, ['send_alert']);
+  assert.equal(retry.duplicate, false);
+  assert.deepEqual(retry.failedActions, []);
+  assert.equal(alertAttempts, 2);
+  assert.deepEqual(calls, [
+    `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
+    `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
+  ]);
 });
 
 test('deletes protected staff scams without a public callout or role changes', async () => {
@@ -331,7 +415,7 @@ function createMessage(
     authorBot,
     channelId: CHANNEL_ID,
     content:
-      '@everyone Giving out my MacBook and Canon camera for free. First come first serve. DM if interested on WhatsApp +1 (346) 383-3280.',
+      '@everyone Giving out my MacBook and Canon camera for free. First come first serve. DM if interested on WhatsApp +1 (202) 555-0109.',
     eventType: 'MESSAGE_CREATE',
     guildId: GUILD_ID,
     joinedTimestamp: NOW - 90 * 24 * 60 * 60 * 1_000,
