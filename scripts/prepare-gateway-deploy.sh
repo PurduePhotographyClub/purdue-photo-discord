@@ -48,10 +48,11 @@ cat > "$DEPLOY_DIR/package.json" <<'JSON'
 }
 JSON
 
+npm install --package-lock-only --omit=dev --ignore-scripts --prefix "$DEPLOY_DIR"
+
 cat > "$DEPLOY_DIR/.gitignore" <<'GITIGNORE'
 node_modules
 *.log
-package-lock.json
 GITIGNORE
 
 cat > "$DEPLOY_DIR/README.md" <<'MARKDOWN'
