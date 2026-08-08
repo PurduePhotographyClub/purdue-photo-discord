@@ -95,9 +95,13 @@ const TICKET_TEMPLATE_OPENING_PATTERN =
   /\b(?:amazing|great|excellent)\s+(?:concert\s+)?(?:tickets?|passes?)\b/u;
 const TICKET_TEMPLATE_RECIPIENT_PATTERN =
   /\bsomeone\s+who\s+can\s+(?:truly\s+)?enjoy\s+the\s+(?:show|concert|event|game)\b/u;
+const TICKET_TEMPLATE_OMITTED_OPENING_PATTERN =
+  /\b(?:i|we)\s+have\s+(?:[2-9]|\d{2,}|two|three|four|five|six|seven|eight|nine|ten)\s+(?:amazing|great|excellent)\s+for\s+the\s+(?:[a-z0-9]+\s+){1,8}(?:concert|show|game|event)\b/u;
+const TICKET_TEMPLATE_OMITTED_SALE_PATTERN =
+  /\blooking\s+to\s+sell\s+the\s+to\s+someone\s+who\s+can\s+(?:truly\s+)?enjoy\s+the\s+(?:show|concert|event|game)\b/u;
 const FACE_VALUE_SALE_PATTERN = /\bface\s+value\b/u;
 const REPORTED_SCAM_CONTEXT_PATTERN =
-  /\b(?:scam\s+warning|is\s+this\s+(?:a\s+)?scam|someone\s+sent\s+me\s+this|reporting\s+(?:a|this)\s+scam|this\s+(?:message|post)\s+is\s+a\s+scam|do\s+not\s+d\s*m\s+this\s+person)\b/u;
+  /\b(?:scam\s+warning|is\s+this\s+(?:a\s+)?scam|someone\s+sent\s+me\s+this|heads\s+up\s+this\s+copied\s+message\s+is\s+circulating|reporting\s+(?:a|this)\s+scam|this\s+(?:message|post)\s+is\s+a\s+scam|do\s+not\s+d\s*m\s+this\s+person)\b/u;
 
 const SIGNAL_RULES: readonly ScamSignalRule[] = [
   {
@@ -173,13 +177,15 @@ const SIGNAL_RULES: readonly ScamSignalRule[] = [
   {
     id: 'ticket_template_fingerprint',
     matches: ({ normalizedContent }) =>
-      TICKET_ITEM_PATTERN.test(normalizedContent) &&
       TICKET_SALE_PATTERN.test(normalizedContent) &&
       UNABLE_TO_ATTEND_PATTERN.test(normalizedContent) &&
       TICKET_BUNDLE_PATTERN.test(normalizedContent) &&
-      TICKET_TEMPLATE_OPENING_PATTERN.test(normalizedContent) &&
-      TICKET_TEMPLATE_RECIPIENT_PATTERN.test(normalizedContent),
-    points: 5,
+      TICKET_TEMPLATE_RECIPIENT_PATTERN.test(normalizedContent) &&
+      ((TICKET_ITEM_PATTERN.test(normalizedContent) &&
+        TICKET_TEMPLATE_OPENING_PATTERN.test(normalizedContent)) ||
+        (TICKET_TEMPLATE_OMITTED_OPENING_PATTERN.test(normalizedContent) &&
+          TICKET_TEMPLATE_OMITTED_SALE_PATTERN.test(normalizedContent))),
+    points: 6,
   },
   {
     id: 'new_account',
@@ -249,7 +255,6 @@ export function analyzeScamMessage(
     hasStrongCorroboration &&
     score >= 13;
   const isTicketTemplateScam =
-    hasTicketOffer &&
     hasUnableToAttendStory &&
     hasTicketBundle &&
     hasTicketTemplateFingerprint &&
@@ -257,6 +262,13 @@ export function analyzeScamMessage(
     score >= 17;
   const isSuspiciousTicketOffer =
     hasTicketOffer && hasUnableToAttendStory && hasContact;
+  const isNounOmittedTicketNearMatch =
+    TICKET_TEMPLATE_OMITTED_OPENING_PATTERN.test(normalizedContent) &&
+    TICKET_SALE_PATTERN.test(normalizedContent) &&
+    UNABLE_TO_ATTEND_PATTERN.test(normalizedContent) &&
+    TICKET_BUNDLE_PATTERN.test(normalizedContent) &&
+    TICKET_TEMPLATE_RECIPIENT_PATTERN.test(normalizedContent) &&
+    hasContact;
   const isActionableScam = isGiveawayScam || isTicketTemplateScam;
   const isLikelyScam =
     !isReportedScam && !isTransparentFaceValueSale && isActionableScam;
@@ -265,7 +277,9 @@ export function analyzeScamMessage(
     isLikelyScam,
     requiresReview:
       !isLikelyScam &&
-      ((isReportedScam && isActionableScam) || isSuspiciousTicketOffer),
+      (isActionableScam ||
+        isSuspiciousTicketOffer ||
+        isNounOmittedTicketNearMatch),
     score,
     signalIds,
   };

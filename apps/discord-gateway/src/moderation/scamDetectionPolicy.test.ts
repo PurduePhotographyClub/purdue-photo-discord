@@ -14,6 +14,35 @@ const BRUNO_MARS_TICKET_SCAM = `I have 4 amazing tickets for the Bruno Mars conc
 Unfortunately, I’m no longer able to attend, so I’m looking to sell the tickets to someone who can truly enjoy the show.
 You can take all 4 or just a pair.
 Message me if you’re interested: +1 (202) 555-0104`;
+const NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM = [
+  'Hi ',
+  'I have 4 amazing for the Bruno Mars concert on Wed , Sep 9, 2026 at 7:00 PM at Lucas oil Stadium , Indianapolis , Indiana.',
+  '',
+  'Unfortunately, I’m no longer able to attend, so I’m looking to sell the to someone who can truly enjoy the show.',
+  'You can take all 4 or just a pair.',
+  'Message me if you’re interested: +1 (202) 555-0119',
+].join('\n');
+const NOUN_OMITTED_FACE_VALUE_TICKET_SALE =
+  NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
+    'You can take all 4 or just a pair.',
+    'You can take all 4 or just a pair at face value.',
+  );
+const COPIED_MESSAGE_PREFIXED_NOUN_OMITTED_TICKET_SCAM = `Heads up, this copied message is circulating:\n\n${NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM}`;
+const GRAMMATICAL_NOUN_OMITTED_TICKET_SALE =
+  NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
+    'looking to sell the to someone',
+    'looking to sell to someone',
+  );
+const MESSAGE_ONLY_NOUN_OMITTED_TICKET_SALE =
+  NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
+    'Message me if you’re interested: +1 (202) 555-0119',
+    'Message me if you’re interested.',
+  );
+const PHONE_ONLY_NOUN_OMITTED_TICKET_SALE =
+  NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
+    'Message me if you’re interested: +1 (202) 555-0119',
+    '+1 (202) 555-0121',
+  );
 const BRUNO_MARS_TICKET_SCAM_SIGNALS = [
   'direct_contact',
   'phone_number',
@@ -68,6 +97,97 @@ test('flags the copied Bruno Mars ticket pitch through a ticket-template fingerp
     new Set(result.signalIds),
     new Set(BRUNO_MARS_TICKET_SCAM_SIGNALS),
   );
+});
+
+test('flags the supplied noun-omitted Bruno Mars pitch through the template fingerprint', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, true);
+  assert.equal(result.requiresReview, false);
+  assert.ok(result.signalIds.includes('ticket_template_fingerprint'));
+});
+
+test('sends the noun-omitted template with face value to review instead of quarantine', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: NOUN_OMITTED_FACE_VALUE_TICKET_SALE,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, false);
+  assert.equal(result.requiresReview, true);
+  assert.ok(result.signalIds.includes('ticket_template_fingerprint'));
+});
+
+test('routes a copied-message-prefixed noun-omitted pitch to review instead of quarantine', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: COPIED_MESSAGE_PREFIXED_NOUN_OMITTED_TICKET_SCAM,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, false);
+  assert.equal(result.requiresReview, true);
+  assert.ok(result.signalIds.includes('ticket_template_fingerprint'));
+});
+
+for (const { content, label } of [
+  {
+    content: GRAMMATICAL_NOUN_OMITTED_TICKET_SALE,
+    label: 'grammatical sell to',
+  },
+  {
+    content: MESSAGE_ONLY_NOUN_OMITTED_TICKET_SALE,
+    label: 'Message me without a phone number',
+  },
+  {
+    content: PHONE_ONLY_NOUN_OMITTED_TICKET_SALE,
+    label: 'phone number without Message me',
+  },
+]) {
+  test(`keeps the ${label} near match out of quarantine but requires review`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, label);
+    assert.equal(result.requiresReview, true, label);
+  });
+}
+
+test('does not quarantine detailed concert discussion or unrelated marketplace copy', () => {
+  const legitimateMessages = [
+    'The Bruno Mars concert is Wednesday, September 9, 2026 at 7:00 PM at Lucas Oil Stadium in Indianapolis, Indiana. Doors open at 5:30 PM. Does anyone know the camera policy?',
+    'Who else is going to the Bruno Mars show at Lucas Oil Stadium? Four of us are meeting by the south entrance before the 7:00 PM start.',
+    'I have four amazing framed prints for sale because my plans changed. I am looking to sell them to someone who can truly enjoy the art. You can take all four or just a pair. Message me at +1 (202) 555-0120.',
+  ];
+
+  for (const content of legitimateMessages) {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, content);
+    assert.equal(result.requiresReview, false, content);
+  }
 });
 
 test('keeps a face-value compound ticket pitch unquarantined but marks it for private review', () => {
