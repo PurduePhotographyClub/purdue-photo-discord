@@ -14,6 +14,14 @@ const BRUNO_MARS_TICKET_SCAM = `I have 4 amazing tickets for the Bruno Mars conc
 Unfortunately, I’m no longer able to attend, so I’m looking to sell the tickets to someone who can truly enjoy the show.
 You can take all 4 or just a pair.
 Message me if you’re interested: +1 (202) 555-0104`;
+const NEED_THEM_GONE_TICKET_SCAM = BRUNO_MARS_TICKET_SCAM.replace(
+  'so I’m looking to sell the tickets to someone who can truly enjoy the show.',
+  'so I need them gone. I want them to go to someone who can truly enjoy the show.',
+);
+const LETTING_THEM_GO_TICKET_SCAM = BRUNO_MARS_TICKET_SCAM.replace(
+  'so I’m looking to sell the tickets to someone who can truly enjoy the show.',
+  'so I’m letting them go. I want them to go to someone who can truly enjoy the show.',
+);
 const NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM = [
   'Hi ',
   'I have 4 amazing for the Bruno Mars concert on Wed , Sep 9, 2026 at 7:00 PM at Lucas oil Stadium , Indianapolis , Indiana.',
@@ -27,12 +35,33 @@ const NOUN_OMITTED_FACE_VALUE_TICKET_SALE =
     'You can take all 4 or just a pair.',
     'You can take all 4 or just a pair at face value.',
   );
+const FACE_VALUE_INSIDE_SALE_PHRASE = BRUNO_MARS_TICKET_SCAM.replace(
+  'looking to sell the tickets to someone',
+  'looking to sell the tickets at face value to someone',
+);
 const COPIED_MESSAGE_PREFIXED_NOUN_OMITTED_TICKET_SCAM = `Heads up, this copied message is circulating:\n\n${NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM}`;
+const FYI_PREFIXED_NOUN_OMITTED_TICKET_SCAM = `FYI, sharing the copied scam so everyone knows what to avoid:\n\n${NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM}`;
+const BEWARE_PREFIXED_NOUN_OMITTED_TICKET_SCAM = `Beware, copied scam follows:\n\n${NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM}`;
+const DO_NOT_CONTACT_PREFIXED_NOUN_OMITTED_TICKET_SCAM = `Do not contact this person; they posted:\n\n${NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM}`;
+const I_HAVE_FOUR_AVAILABLE_NOUN_OMITTED_TICKET_SALE =
+  NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
+    'I have 4 amazing for the Bruno Mars concert',
+    'I have four available for the Bruno Mars concert',
+  );
+const THERE_ARE_FOUR_AVAILABLE_NOUN_OMITTED_TICKET_SALE =
+  NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
+    'I have 4 amazing for the Bruno Mars concert',
+    'There are four available for the Bruno Mars concert',
+  );
 const GRAMMATICAL_NOUN_OMITTED_TICKET_SALE =
   NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
     'looking to sell the to someone',
     'looking to sell to someone',
   );
+const REORDERED_NOUN_OMITTED_TICKET_SALE =
+  'My plans changed and I can no longer attend the Bruno Mars show at Lucas Oil Stadium. Four are available, either all four or a pair, and I want to resell them to someone who will truly enjoy the concert. DM me if interested at +1 (202) 555-0118.';
+const ANOTHER_FAN_NOUN_OMITTED_TICKET_SALE =
+  'My plans changed and I can no longer attend the Bruno Mars show at Lucas Oil Stadium. Four are available, either all four or a pair, and I want to resell them to another fan. DM me if interested at +1 (202) 555-0117.';
 const MESSAGE_ONLY_NOUN_OMITTED_TICKET_SALE =
   NOUN_OMITTED_BRUNO_MARS_TICKET_SCAM.replace(
     'Message me if you’re interested: +1 (202) 555-0119',
@@ -99,6 +128,25 @@ test('flags the copied Bruno Mars ticket pitch through a ticket-template fingerp
   );
 });
 
+for (const { content, label } of [
+  { content: NEED_THEM_GONE_TICKET_SCAM, label: 'need them gone' },
+  { content: LETTING_THEM_GO_TICKET_SCAM, label: 'letting them go' },
+]) {
+  test(`quarantines the explicit ticket template using ${label} sale wording`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, true, label);
+    assert.equal(result.requiresReview, false, label);
+    assert.ok(result.signalIds.includes('ticket_template_fingerprint'), label);
+  });
+}
+
 test('flags the supplied noun-omitted Bruno Mars pitch through the template fingerprint', () => {
   const result = analyzeScamMessage({
     accountCreatedTimestamp: OLD_ACCOUNT,
@@ -127,6 +175,19 @@ test('sends the noun-omitted template with face value to review instead of quara
   assert.ok(result.signalIds.includes('ticket_template_fingerprint'));
 });
 
+test('sends face-value wording inside the ticket sale phrase to review instead of quarantine', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: FACE_VALUE_INSIDE_SALE_PHRASE,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, false);
+  assert.equal(result.requiresReview, true);
+});
+
 test('routes a copied-message-prefixed noun-omitted pitch to review instead of quarantine', () => {
   const result = analyzeScamMessage({
     accountCreatedTimestamp: OLD_ACCOUNT,
@@ -141,11 +202,97 @@ test('routes a copied-message-prefixed noun-omitted pitch to review instead of q
   assert.ok(result.signalIds.includes('ticket_template_fingerprint'));
 });
 
+test('routes an FYI-prefixed copied scam to review instead of quarantine', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: FYI_PREFIXED_NOUN_OMITTED_TICKET_SCAM,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, false);
+  assert.equal(result.requiresReview, true);
+});
+
+for (const { content, label } of [
+  {
+    content: BEWARE_PREFIXED_NOUN_OMITTED_TICKET_SCAM,
+    label: 'Beware, copied scam follows',
+  },
+  {
+    content: DO_NOT_CONTACT_PREFIXED_NOUN_OMITTED_TICKET_SCAM,
+    label: 'Do not contact this person; they posted',
+  },
+]) {
+  test(`routes the ${label} warning prefix to review instead of quarantine`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, label);
+    assert.equal(result.requiresReview, true, label);
+    assert.ok(result.signalIds.includes('ticket_template_fingerprint'), label);
+  });
+}
+
+for (const { content, label } of [
+  {
+    content: I_HAVE_FOUR_AVAILABLE_NOUN_OMITTED_TICKET_SALE,
+    label: 'I have four available',
+  },
+  {
+    content: THERE_ARE_FOUR_AVAILABLE_NOUN_OMITTED_TICKET_SALE,
+    label: 'There are four available',
+  },
+]) {
+  test(`routes the noun-omitted ${label} opening to review instead of quarantine`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, label);
+    assert.equal(result.requiresReview, true, label);
+  });
+}
+
 for (const { content, label } of [
   {
     content: GRAMMATICAL_NOUN_OMITTED_TICKET_SALE,
-    label: 'grammatical sell to',
+    label: 'grammatical sell to variant',
   },
+  {
+    content: REORDERED_NOUN_OMITTED_TICKET_SALE,
+    label: 'reordered structural paraphrase',
+  },
+  {
+    content: ANOTHER_FAN_NOUN_OMITTED_TICKET_SALE,
+    label: 'another fan paraphrase',
+  },
+]) {
+  test(`routes the noun-omitted ${label} to review instead of quarantine`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, label);
+    assert.equal(result.requiresReview, true, label);
+  });
+}
+
+for (const { content, label } of [
   {
     content: MESSAGE_ONLY_NOUN_OMITTED_TICKET_SALE,
     label: 'Message me without a phone number',
@@ -173,6 +320,7 @@ test('does not quarantine detailed concert discussion or unrelated marketplace c
   const legitimateMessages = [
     'The Bruno Mars concert is Wednesday, September 9, 2026 at 7:00 PM at Lucas Oil Stadium in Indianapolis, Indiana. Doors open at 5:30 PM. Does anyone know the camera policy?',
     'Who else is going to the Bruno Mars show at Lucas Oil Stadium? Four of us are meeting by the south entrance before the 7:00 PM start.',
+    'Ticketmaster says four Bruno Mars tickets are available, including pairs. I can no longer attend, so I canceled mine at face value. Check the official venue site for current availability.',
     'I have four amazing framed prints for sale because my plans changed. I am looking to sell them to someone who can truly enjoy the art. You can take all four or just a pair. Message me at +1 (202) 555-0120.',
   ];
 

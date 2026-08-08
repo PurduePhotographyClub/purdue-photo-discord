@@ -94,14 +94,47 @@ const TICKET_BUNDLE_PATTERN =
 const TICKET_TEMPLATE_OPENING_PATTERN =
   /\b(?:amazing|great|excellent)\s+(?:concert\s+)?(?:tickets?|passes?)\b/u;
 const TICKET_TEMPLATE_RECIPIENT_PATTERN =
-  /\bsomeone\s+who\s+can\s+(?:truly\s+)?enjoy\s+the\s+(?:show|concert|event|game)\b/u;
+  /\bsomeone\s+who\s+(?:can|will)\s+(?:truly\s+)?enjoy\s+the\s+(?:show|concert|event|game)\b/u;
 const TICKET_TEMPLATE_OMITTED_OPENING_PATTERN =
   /\b(?:i|we)\s+have\s+(?:[2-9]|\d{2,}|two|three|four|five|six|seven|eight|nine|ten)\s+(?:amazing|great|excellent)\s+for\s+the\s+(?:[a-z0-9]+\s+){1,8}(?:concert|show|game|event)\b/u;
-const TICKET_TEMPLATE_OMITTED_SALE_PATTERN =
-  /\blooking\s+to\s+sell\s+the\s+to\s+someone\s+who\s+can\s+(?:truly\s+)?enjoy\s+the\s+(?:show|concert|event|game)\b/u;
+const TICKET_TEMPLATE_AVAILABLE_QUANTITY_PATTERN =
+  /\b(?:(?:i|we)\s+have\s+|there\s+(?:are|is)\s+)?(?:[2-9]|\d{2,}|two|three|four|five|six|seven|eight|nine|ten)\s+(?:(?:are|is)\s+)?(?:available|for\s+sale)\b/u;
+const TICKET_TEMPLATE_EVENT_CONTEXT_PATTERN =
+  /\b(?:concert|show|festival|game|match|performance)\b/u;
+const TICKET_TEMPLATE_CORRUPTED_SALE_PATTERN =
+  /\blooking\s+to\s+sell\s+the\s+to\s+someone\s+who\s+(?:can|will)\s+(?:truly\s+)?enjoy\s+the\s+(?:show|concert|event|game)\b/u;
 const FACE_VALUE_SALE_PATTERN = /\bface\s+value\b/u;
 const REPORTED_SCAM_CONTEXT_PATTERN =
-  /\b(?:scam\s+warning|is\s+this\s+(?:a\s+)?scam|someone\s+sent\s+me\s+this|heads\s+up\s+this\s+copied\s+message\s+is\s+circulating|reporting\s+(?:a|this)\s+scam|this\s+(?:message|post)\s+is\s+a\s+scam|do\s+not\s+d\s*m\s+this\s+person)\b/u;
+  /\b(?:scam\s+warning|is\s+this\s+(?:a\s+)?scam|someone\s+sent\s+me\s+this|heads\s+up\s+this\s+copied\s+message\s+is\s+circulating|fyi\s+sharing\s+(?:the|a|this)\s+copied\s+scam\s+so\s+(?:everyone|people)\s+(?:knows?|know)\s+what\s+to\s+avoid|beware\s+(?:a\s+|the\s+|this\s+)?(?:copied\s+)?scam\s+(?:follows?|below)|reporting\s+(?:a|this)\s+scam|this\s+(?:message|post)\s+is\s+a\s+scam|do\s+not\s+(?:d\s*m|message|contact|call|text)\s+this\s+(?:person|user|account))\b/u;
+
+function matchesExplicitTicketTemplate(normalizedContent: string) {
+  return (
+    TICKET_ITEM_PATTERN.test(normalizedContent) &&
+    TICKET_TEMPLATE_OPENING_PATTERN.test(normalizedContent) &&
+    TICKET_TEMPLATE_RECIPIENT_PATTERN.test(normalizedContent)
+  );
+}
+
+function matchesNounOmittedTicketStructure(normalizedContent: string) {
+  const hasQuantityOpening =
+    TICKET_TEMPLATE_OMITTED_OPENING_PATTERN.test(normalizedContent) ||
+    TICKET_TEMPLATE_AVAILABLE_QUANTITY_PATTERN.test(normalizedContent);
+
+  return (
+    hasQuantityOpening &&
+    TICKET_TEMPLATE_EVENT_CONTEXT_PATTERN.test(normalizedContent) &&
+    TICKET_SALE_PATTERN.test(normalizedContent) &&
+    UNABLE_TO_ATTEND_PATTERN.test(normalizedContent) &&
+    TICKET_BUNDLE_PATTERN.test(normalizedContent)
+  );
+}
+
+function matchesCorruptedNounOmittedTicketTemplate(normalizedContent: string) {
+  return (
+    TICKET_TEMPLATE_OMITTED_OPENING_PATTERN.test(normalizedContent) &&
+    TICKET_TEMPLATE_CORRUPTED_SALE_PATTERN.test(normalizedContent)
+  );
+}
 
 const SIGNAL_RULES: readonly ScamSignalRule[] = [
   {
@@ -181,10 +214,8 @@ const SIGNAL_RULES: readonly ScamSignalRule[] = [
       UNABLE_TO_ATTEND_PATTERN.test(normalizedContent) &&
       TICKET_BUNDLE_PATTERN.test(normalizedContent) &&
       TICKET_TEMPLATE_RECIPIENT_PATTERN.test(normalizedContent) &&
-      ((TICKET_ITEM_PATTERN.test(normalizedContent) &&
-        TICKET_TEMPLATE_OPENING_PATTERN.test(normalizedContent)) ||
-        (TICKET_TEMPLATE_OMITTED_OPENING_PATTERN.test(normalizedContent) &&
-          TICKET_TEMPLATE_OMITTED_SALE_PATTERN.test(normalizedContent))),
+      (matchesExplicitTicketTemplate(normalizedContent) ||
+        matchesCorruptedNounOmittedTicketTemplate(normalizedContent)),
     points: 6,
   },
   {
@@ -263,12 +294,7 @@ export function analyzeScamMessage(
   const isSuspiciousTicketOffer =
     hasTicketOffer && hasUnableToAttendStory && hasContact;
   const isNounOmittedTicketNearMatch =
-    TICKET_TEMPLATE_OMITTED_OPENING_PATTERN.test(normalizedContent) &&
-    TICKET_SALE_PATTERN.test(normalizedContent) &&
-    UNABLE_TO_ATTEND_PATTERN.test(normalizedContent) &&
-    TICKET_BUNDLE_PATTERN.test(normalizedContent) &&
-    TICKET_TEMPLATE_RECIPIENT_PATTERN.test(normalizedContent) &&
-    hasContact;
+    matchesNounOmittedTicketStructure(normalizedContent) && hasContact;
   const isActionableScam = isGiveawayScam || isTicketTemplateScam;
   const isLikelyScam =
     !isReportedScam && !isTransparentFaceValueSale && isActionableScam;
