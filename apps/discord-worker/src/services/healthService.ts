@@ -13,10 +13,7 @@ import {
 import { getErrorMessage } from '../utils/errors';
 
 export type ServiceHealthStatus =
-  | 'online'
-  | 'offline'
-  | 'not_configured'
-  | 'invalid_config';
+  'online' | 'offline' | 'not_configured' | 'invalid_config';
 
 export interface ServiceHealthCheck {
   name: string;

@@ -10,11 +10,7 @@ import { editDiscordMessage } from './discordMessageService';
 import { createLogger } from '../utils/logger';
 
 type PhotographerRequestStatus =
-  | 'OPEN'
-  | 'REACHED'
-  | 'ACCEPTED'
-  | 'CANCELLED'
-  | 'EXPIRED';
+  'OPEN' | 'REACHED' | 'ACCEPTED' | 'CANCELLED' | 'EXPIRED';
 
 interface DiscordMessageResponse {
   content?: string;
