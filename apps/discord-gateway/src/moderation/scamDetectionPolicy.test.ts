@@ -12,6 +12,12 @@ const ESTABLISHED_MEMBER = NOW - 90 * 24 * 60 * 60 * 1_000;
 const CANON_R7_BODY_AND_LENS_GIVEAWAY = `Giving away my Canon EOS R7 Mirrorless Camera (Body Only), Hybrid Camera, 32.5 Megapixel (APS-C) CMOS Sensor, 4K Video, for Sports, Action, Content Creators, Vlogging Camera, Black
 Comes with extra lens
 DM me if interested`;
+const REPEATED_CANON_UPGRADE_GIVEAWAY =
+  'Just upgraded! Giving away my old Canon camera. It is still functional and in good shape. Perfect for photography enthusiasts or anyone wanting to start! DM me if interested in picking it up.';
+const BRUNO_TICKET_GIVEAWAY_CAMPAIGN =
+  "Hey @everyone, I'm giving away Bruno Mars tickets for free, my schedule for that day got so tight. LMK if anyone is interested in them. +1 (202) 555-0123";
+const ARIANA_PRESALE_CAMPAIGN =
+  'It is so crazy to write this here, but I am curious if there is any Ariana fan here interested in her August 2026 concert at United Center. I have a few presale tickets that I am looking to resell because my sister is seriously ill and I need to travel to be by her side. The seats are good too, offering a fantastic view. Please LMK if anyone is interested or knows anyone who might be interested, TYSM. Text me, iMessage, or WhatsApp +1 (202) 555-0124';
 const BRUNO_MARS_TICKET_SCAM = `I have 4 amazing tickets for the Bruno Mars concert on Wed , Sep 9, 2026 at 7:00 PM at Lucas oil  Stadium , Indianapolis , Indiana.
 
 Unfortunately, I’m no longer able to attend, so I’m looking to sell the tickets to someone who can truly enjoy the show.
@@ -514,6 +520,159 @@ test('quarantines the exact Canon R7 body-and-lens giveaway from an established 
   assert.equal(result.signalIds.includes('broadcast_mention'), false);
 });
 
+for (const { content, label } of [
+  {
+    content: CANON_R7_BODY_AND_LENS_GIVEAWAY.replace(
+      'extra lens',
+      'extra lense',
+    ),
+    label: 'extra lense misspelling',
+  },
+  {
+    content: REPEATED_CANON_UPGRADE_GIVEAWAY,
+    label: 'repeated just-upgraded Canon campaign',
+  },
+  {
+    content: REPEATED_CANON_UPGRADE_GIVEAWAY.replace(
+      'wanting to start',
+      'to start',
+    ).replace('picking it up.', 'picking it'),
+    label: 'shortened Canon campaign',
+  },
+]) {
+  test(`quarantines the established-member camera scam with ${label}`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, true, label);
+    assert.equal(result.requiresReview, false, label);
+    assert.ok(result.signalIds.includes('known_camera_giveaway_campaign'));
+  });
+}
+
+test('routes a generic free season-ticket transfer to review without punishing the member', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content:
+      "Is anyone interested in my student football season tickets for free? I won't be able to attend anymore due to my work schedule. HMU +1 202 555 0122",
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, false);
+  assert.equal(result.requiresReview, true);
+  assert.ok(result.signalIds.includes('ticket_offer'));
+});
+
+for (const { content, label } of [
+  {
+    content: BRUNO_TICKET_GIVEAWAY_CAMPAIGN,
+    label: 'short Bruno Mars giveaway with LMK',
+  },
+  {
+    content: ARIANA_PRESALE_CAMPAIGN,
+    label: 'copied Ariana presale campaign',
+  },
+]) {
+  test(`quarantines the established-member ticket scam with ${label}`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: content.includes('@everyone'),
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, true, label);
+    assert.equal(result.requiresReview, false, label);
+    assert.ok(result.signalIds.includes('ticket_offer'), label);
+  });
+}
+
+for (const { campaign, prefix } of [
+  {
+    campaign: ARIANA_PRESALE_CAMPAIGN,
+    prefix: 'Does this look legit?',
+  },
+  {
+    campaign: BRUNO_TICKET_GIVEAWAY_CAMPAIGN,
+    prefix: 'Does this seem suspicious?',
+  },
+  {
+    campaign: ARIANA_PRESALE_CAMPAIGN,
+    prefix: 'Can someone verify this?',
+  },
+]) {
+  test(`routes a ${prefix} copied-campaign report to review`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content: `${prefix} Someone sent me this:\n\n${campaign}`,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: campaign.includes('@everyone'),
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, prefix);
+    assert.equal(result.requiresReview, true, prefix);
+  });
+}
+
+test('does not let a scammer bypass quarantine with a bare legitimacy question', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: `Does this look legit?\n\n${BRUNO_TICKET_GIVEAWAY_CAMPAIGN}`,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: true,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, true);
+  assert.equal(result.requiresReview, false);
+});
+
+for (const { content, label } of [
+  {
+    content:
+      'Giving away two Bruno Mars tickets for free. LMK if interested at +1 (202) 555-0125.',
+    label: 'ticket giveaway without an inability story',
+  },
+  {
+    content:
+      'I have a few great seats available because I need to travel for a family emergency. Text me on iMessage at +1 (202) 555-0126.',
+    label: 'seat-only resale wording',
+  },
+  {
+    content:
+      'Giving away two Bruno Mars tickets because my work schedule got tight. LMK if interested at +1 (202) 555-0127.',
+    label: 'ordinary Bruno giveaway with a schedule conflict',
+  },
+  {
+    content:
+      'I have a few presale tickets to resell because my sister is ill and I need to travel. The seats have a fantastic view. DM me at +1 (202) 555-0128.',
+    label: 'generic family-travel resale story',
+  },
+]) {
+  test(`routes the ${label} to review without automatic punishment`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, label);
+    assert.equal(result.requiresReview, true, label);
+    assert.ok(result.signalIds.includes('ticket_offer'), label);
+  });
+}
+
 test('does not treat generic Sony marketing copy as the known Canon campaign', () => {
   const result = analyzeScamMessage({
     accountCreatedTimestamp: OLD_ACCOUNT,
@@ -698,6 +857,13 @@ test('keeps common legitimate photography and electronics messages below the act
     'Call me at +1 (765) 555-0198 when you arrive.',
     'The camera checkout desk has free lens cloths for members.',
     'Scam warning: do not DM this person. They claim to be giving away a camera in exchange for a shipping fee.',
+    'Does Purdue allow students to use Lightroom or Lightroom Classic for free on personal devices?',
+    'A Polaroid photo of my friends was taken for free. I still keep it because it is such a good memory.',
+    'You got a ticket to the Maldives to go with it?',
+    'I am free Friday before noon and between 2 and 3 PM. I have a bike, so anywhere on campus is fine.',
+    'I guess Discord thinks I am saying that I have a bike to give away for free.',
+    'Do you happen to have a Yamaha piano, Nintendo Switch OLED, Taylor guitar, and Leica camera as well?',
+    'For sale: Sony A6700 mirrorless camera with its box, strap, battery, Sigma 18-50mm lens, shutter count, and receipt. Asking $1,600 OBO for local pickup. DM me for more pictures.',
   ];
 
   for (const content of legitimateMessages) {
@@ -710,6 +876,7 @@ test('keeps common legitimate photography and electronics messages below the act
     });
 
     assert.equal(result.isLikelyScam, false, content);
+    assert.equal(result.requiresReview, false, content);
   }
 });
 
