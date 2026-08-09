@@ -96,9 +96,7 @@ const BASE_MANAGED_ROLE_IDS = uniqueRoleIds([
 ]);
 type DiscordMemberRoleUpdateMethod = 'DELETE' | 'PUT';
 type DiscordMemberRoleUpdateResult =
-  | 'applied'
-  | 'member_missing'
-  | 'role_missing';
+  'applied' | 'member_missing' | 'role_missing';
 
 interface DiscordMemberRoleUpdateOutcome {
   roleId: string;

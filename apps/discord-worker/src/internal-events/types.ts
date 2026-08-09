@@ -24,9 +24,7 @@ export interface ScheduledEventInternalEvent {
   startsAt?: string;
   title?: string;
   type:
-    | 'website.event.create'
-    | 'website.event.delete'
-    | 'website.event.update';
+    'website.event.create' | 'website.event.delete' | 'website.event.update';
 }
 
 export interface DiscordGuildStatsInternalEvent {
