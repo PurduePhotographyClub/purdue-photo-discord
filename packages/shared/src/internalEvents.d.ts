@@ -70,5 +70,4 @@ export interface GatewayInternalEvent {
 }
 
 export type InternalEvent =
-  | GatewayInternalEvent
-  | WebsiteDiscordNotificationEvent;
+  GatewayInternalEvent | WebsiteDiscordNotificationEvent;
