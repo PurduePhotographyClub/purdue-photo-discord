@@ -7,6 +7,7 @@ import {
 } from './scamDetectionPolicy.js';
 
 const NOW = Date.UTC(2026, 7, 7, 22, 19, 0);
+const DAY_MS = 24 * 60 * 60 * 1_000;
 const OLD_ACCOUNT = NOW - 365 * 24 * 60 * 60 * 1_000;
 const ESTABLISHED_MEMBER = NOW - 90 * 24 * 60 * 60 * 1_000;
 const CANON_R7_BODY_AND_LENS_GIVEAWAY = `Giving away my Canon EOS R7 Mirrorless Camera (Body Only), Hybrid Camera, 32.5 Megapixel (APS-C) CMOS Sensor, 4K Video, for Sports, Action, Content Creators, Vlogging Camera, Black
@@ -18,6 +19,97 @@ const BRUNO_TICKET_GIVEAWAY_CAMPAIGN =
   "Hey @everyone, I'm giving away Bruno Mars tickets for free, my schedule for that day got so tight. LMK if anyone is interested in them. +1 (202) 555-0123";
 const ARIANA_PRESALE_CAMPAIGN =
   'It is so crazy to write this here, but I am curious if there is any Ariana fan here interested in her August 2026 concert at United Center. I have a few presale tickets that I am looking to resell because my sister is seriously ill and I need to travel to be by her side. The seats are good too, offering a fantastic view. Please LMK if anyone is interested or knows anyone who might be interested, TYSM. Text me, iMessage, or WhatsApp +1 (202) 555-0124';
+const CAMERA_UPGRADE_GIVEAWAY_VARIATIONS = [
+  {
+    label: 'great-condition Canon for photography beginners',
+    content:
+      '@everyone Just upgraded! Giving away my old Canon camera. It is still in great condition and works perfectly. Perfect for anyone interested in photography or wanting to get started. DM me if interested.',
+  },
+  {
+    label: 'recent camera setup upgrade',
+    content:
+      'Hey everyone, I recently upgraded my camera setup and no longer need my old Canon. I would like to give it to someone who could make use of it. Message me if interested.',
+  },
+  {
+    label: 'previous Canon after a new purchase',
+    content:
+      'Giving away my previous Canon camera since I purchased a new model. Still fully functional and in really good condition. First come first served, DM me.',
+  },
+  {
+    label: 'new camera with old Canon starter story',
+    content:
+      'Just bought myself a new camera 📸 so I am giving my old Canon away to somebody who needs one. Great starter camera for photography. HMU if you want it.',
+  },
+  {
+    label: 'extra Canon collecting dust',
+    content:
+      'Hello @everyone! I upgraded recently and have an extra Canon camera sitting around. Rather than letting it collect dust I would like to give it away. DM if interested.',
+  },
+  {
+    label: 'free Canon after upgrade',
+    content:
+      "Free Canon camera! Recently upgraded and don't need my old one anymore. Everything works and it is in good shape. Send me a message if you would like it.",
+  },
+  {
+    label: 'photography student Canon pitch',
+    content:
+      'Any photography students here need a camera? I just upgraded and would like to give my old Canon to somebody who can use it. DM me privately.',
+  },
+  {
+    label: 'Canon DSLR for a beginner',
+    content:
+      'Giving out my Canon DSLR because I have a newer model now. It is used but still works perfectly and would be great for somebody getting into photography.',
+  },
+  {
+    label: 'short Canon cam wording',
+    content: 'just upgraded!! giving away old canon cam 📷 dm if interested',
+  },
+  {
+    label: 'old camera condition shorthand',
+    content:
+      'Giving away my old camera, still works perfectly. msg me if you want it',
+  },
+  {
+    label: 'new Sony replacing Canon',
+    content:
+      "Got a new Sony so I don't need my Canon anymore. Free to someone who needs it, PM me",
+  },
+  {
+    label: 'free beginner camera',
+    content:
+      'FREE CAMERA 📸 perfect for beginners. I upgraded recently so I have no use for this one anymore. inbox me',
+  },
+  {
+    label: 'extra camera for a new photographer',
+    content:
+      'Anyone wanting to start photography? Got an extra camera I am willing to give away. message privately',
+  },
+  {
+    label: 'upgraded photography equipment with urgency',
+    content:
+      'Giving away photography equipment after upgrading my setup. First person to contact me gets it.',
+  },
+  {
+    label: 'obfuscated Canon and DM',
+    content:
+      'Old C@non available for somebody who needs one. Just upgraded. D M me',
+  },
+  {
+    label: 'obfuscated camera setup',
+    content:
+      'just upgraded my c4mera setup and giving the old one away, message if interested',
+  },
+  {
+    label: 'camera emoji and lens bundle',
+    content:
+      '📷 + lens available at no cost since I bought a newer setup. pm for details',
+  },
+  {
+    label: 'extra DSLR for photography student',
+    content:
+      'I have an extra DSLR I no longer need. Looking to give it to a photography student. Contact me privately.',
+  },
+] as const;
 const BRUNO_MARS_TICKET_SCAM = `I have 4 amazing tickets for the Bruno Mars concert on Wed , Sep 9, 2026 at 7:00 PM at Lucas oil  Stadium , Indianapolis , Indiana.
 
 Unfortunately, I’m no longer able to attend, so I’m looking to sell the tickets to someone who can truly enjoy the show.
@@ -554,6 +646,149 @@ for (const { content, label } of [
     assert.ok(result.signalIds.includes('known_camera_giveaway_campaign'));
   });
 }
+
+for (const { content, label } of CAMERA_UPGRADE_GIVEAWAY_VARIATIONS) {
+  test(`quarantines the confirmed camera giveaway variation: ${label}`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: content.includes('@everyone'),
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, true, label);
+    assert.equal(result.requiresReview, false, label);
+    assert.ok(result.signalIds.includes('camera_giveaway_fingerprint'), label);
+  });
+}
+
+test('quarantines every compound camera variation from a new account and new member', () => {
+  for (const { content, label } of CAMERA_UPGRADE_GIVEAWAY_VARIATIONS) {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: NOW - 2 * DAY_MS,
+      content,
+      joinedTimestamp: NOW - 5 * 60 * 1_000,
+      mentionsEveryone: content.includes('@everyone'),
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, true, label);
+    assert.equal(result.requiresReview, false, label);
+  }
+});
+
+test('reviews a plausible direct camera gift without automatically punishing the member', () => {
+  for (const content of [
+    'I upgraded recently and want to give my old Canon to a photography student. DM me if interested.',
+    'I upgraded recently and want to give my old Canon to a photography student. DM me if you can meet on campus.',
+    'Just upgraded, giving away old Canon cam. DM me if interested. We can meet on campus.',
+  ]) {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, content);
+    assert.equal(result.requiresReview, true, content);
+    assert.ok(
+      result.signalIds.includes('camera_giveaway_fingerprint'),
+      content,
+    );
+  }
+});
+
+test('keeps camera-giveaway keywords safe when the compound scam structure is absent', () => {
+  const legitimateMessages = [
+    'Does Purdue provide Lightroom or Lightroom Classic for free on personal devices?',
+    "Sony's market capitalization passed another electronics company this week.",
+    'Selling my Canon camera for $450 with the receipt and shutter count. DM me if you want to inspect it on campus.',
+    'I upgraded my camera and am giving my old Canon to my cousin for graduation.',
+    'My old Canon camera still works perfectly. DM me if you want sample RAW files from it.',
+    'The club is giving away a donated Canon through its public raffle. Enter through the official club form; staff will not DM entrants.',
+    'Giving away camera stickers left over from the callout. DM me if you want one.',
+    'Giving away my old camera strap after upgrading. DM me if you want the strap.',
+    'Purdue students get free camera checkout through the equipment desk. Contact the equipment manager for the checkout form.',
+    '@everyone I am willing to give feedback on your camera portfolio. Message me if interested.',
+    '@everyone Does anyone know a free camera app? DM me recommendations.',
+    '@everyone I am giving a presentation about free camera software. Message me if you want the slides.',
+    '@everyone I am willing to give feedback on your MacBook setup. DM me if interested.',
+    '@everyone I would like to give a presentation about laptop security. DM me if you want the slides.',
+    'Giving away camera gear after upgrading my setup. DM me if interested.',
+  ];
+
+  for (const content of legitimateMessages) {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, content);
+    assert.equal(result.requiresReview, false, content);
+  }
+});
+
+test('does not let common camera obfuscation or an injected accessory evade detection', () => {
+  const evasionMessages = [
+    {
+      autoQuarantine: false,
+      content:
+        'Just upgraded! Giving away my old c@mera. It still works perfectly and is great for photography beginners. DM me if interested.',
+    },
+    {
+      autoQuarantine: false,
+      content:
+        'Just upgraded! Giving away my old cam3ra. It still works perfectly and is great for photography beginners. DM me if interested.',
+    },
+    {
+      autoQuarantine: true,
+      content:
+        'Just upgraded! Giving away my old Can0n cam. It still works perfectly and is great for photography beginners. DM me if interested.',
+    },
+    {
+      autoQuarantine: false,
+      content:
+        'Just upgraded! Giving away my old Canon camera with a camera bag. It still works perfectly. DM me if interested.',
+    },
+  ];
+
+  for (const { autoQuarantine, content } of evasionMessages) {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, autoQuarantine, content);
+    assert.equal(result.requiresReview, !autoQuarantine, content);
+    assert.ok(
+      result.signalIds.includes('camera_giveaway_fingerprint'),
+      content,
+    );
+  }
+});
+
+test('does not let urgency and a broadcast scam hide behind local-handoff wording', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content:
+      '@everyone Just upgraded! Giving away my old Canon camera. It still works perfectly. First person to contact me gets it. We can meet on campus.',
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: true,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, true);
+  assert.equal(result.requiresReview, false);
+});
 
 test('routes a generic free season-ticket transfer to review without punishing the member', () => {
   const result = analyzeScamMessage({
