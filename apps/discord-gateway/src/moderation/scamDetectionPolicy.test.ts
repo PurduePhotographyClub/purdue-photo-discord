@@ -9,6 +9,9 @@ import {
 const NOW = Date.UTC(2026, 7, 7, 22, 19, 0);
 const OLD_ACCOUNT = NOW - 365 * 24 * 60 * 60 * 1_000;
 const ESTABLISHED_MEMBER = NOW - 90 * 24 * 60 * 60 * 1_000;
+const CANON_R7_BODY_AND_LENS_GIVEAWAY = `Giving away my Canon EOS R7 Mirrorless Camera (Body Only), Hybrid Camera, 32.5 Megapixel (APS-C) CMOS Sensor, 4K Video, for Sports, Action, Content Creators, Vlogging Camera, Black
+Comes with extra lens
+DM me if interested`;
 const BRUNO_MARS_TICKET_SCAM = `I have 4 amazing tickets for the Bruno Mars concert on Wed , Sep 9, 2026 at 7:00 PM at Lucas oil  Stadium , Indianapolis , Indiana.
 
 Unfortunately, I’m no longer able to attend, so I’m looking to sell the tickets to someone who can truly enjoy the show.
@@ -490,6 +493,187 @@ test('flags camera donation stories that move the recipient to WhatsApp', () => 
   assert.ok(result.signalIds.includes('high_value_item'));
 });
 
+test('quarantines the exact Canon R7 body-and-lens giveaway from an established member', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: CANON_R7_BODY_AND_LENS_GIVEAWAY,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, true);
+  assert.equal(result.requiresReview, false);
+  assert.ok(result.signalIds.includes('known_camera_giveaway_campaign'));
+  assert.ok(result.signalIds.includes('camera_listing_fingerprint'));
+  assert.ok(result.signalIds.includes('direct_contact'));
+  assert.ok(result.signalIds.includes('giveaway_lure'));
+  assert.ok(result.signalIds.includes('high_value_item'));
+  assert.equal(result.signalIds.includes('phone_number'), false);
+  assert.equal(result.signalIds.includes('off_platform_contact'), false);
+  assert.equal(result.signalIds.includes('broadcast_mention'), false);
+});
+
+test('does not treat generic Sony marketing copy as the known Canon campaign', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content:
+      'Giving away my Sony A7 IV body only hybrid camera for content creators. It is marketed as a vlogging camera. DM me if interested.',
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, false);
+  assert.equal(result.requiresReview, true);
+  assert.equal(
+    result.signalIds.includes('known_camera_giveaway_campaign'),
+    false,
+  );
+});
+
+for (const { content, label } of [
+  {
+    content:
+      'Giving away my Sony a7 IV full-frame mirrorless camera body with a 33MP sensor and 4K 60p video. Includes an extra FE 24-70mm lens. Message me if interested.',
+    label: 'Sony full-frame body with extra zoom lens',
+  },
+  {
+    content:
+      'I am donating my Nikon Z8 mirrorless camera body, featuring a 45.7-megapixel stacked sensor and 8K video. It comes with a spare NIKKOR Z lens. Inbox me if interested.',
+    label: 'Nikon body with spare NIKKOR lens',
+  },
+  {
+    content:
+      'Giving out a Fujifilm X-T5 camera body with a 40.2MP APS-C sensor and 6.2K recording, bundled with an extra XF lens. Contact me if interested.',
+    label: 'Fujifilm body bundled with extra lens',
+  },
+]) {
+  test(`routes the generic structurally complete ${label} giveaway to review`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, label);
+    assert.equal(result.requiresReview, true, label);
+  });
+}
+
+for (const { content, label, signals } of [
+  {
+    content:
+      'Giving away my Sony a7 IV full-frame mirrorless camera body with a 33MP sensor and 4K video. Includes an extra FE lens. Contact me on WhatsApp at +1 (202) 555-0115.',
+    label: 'off-platform phone contact',
+    signals: ['off_platform_contact', 'phone_number'],
+  },
+  {
+    content:
+      'Giving away my Nikon Z8 mirrorless camera body with a 45.7MP stacked sensor and 8K video. Includes an extra NIKKOR lens. First come, first served. Message me if interested.',
+    label: 'first-come urgency',
+    signals: ['urgency'],
+  },
+] as const) {
+  test(`quarantines a generic structural camera giveaway with ${label}`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, true, label);
+    assert.equal(result.requiresReview, false, label);
+    for (const signal of signals) {
+      assert.ok(result.signalIds.includes(signal), `${label}: ${signal}`);
+    }
+  });
+}
+
+for (const { content, label } of [
+  {
+    content:
+      'Giving away my Panasonic Lumix S5 II mirrorless camera body with a 24MP full-frame sensor, 6K recording, and an extra Lumix lens. PM me if interested.',
+    label: 'PM me contact wording',
+  },
+  {
+    content:
+      'Giving away my OM System OM-1 mirrorless camera body with a stacked 20MP sensor, 4K video, and a spare M.Zuiko lens. Hit me up if interested.',
+    label: 'hit me up contact wording',
+  },
+  {
+    content:
+      'Free to a good home: Leica SL3 mirrorless camera body with a 60MP full-frame sensor, 8K video, and an extra Leica lens. Message me if interested.',
+    label: 'free to a good home wording',
+  },
+  {
+    content:
+      'Giving away my Hasselblad X2D camera body with a 100MP sensor and an extra XCD lens. Ping me privately if interested.',
+    label: 'unrecognized private-contact wording',
+  },
+]) {
+  test(`routes the generic structural giveaway with ${label} to review`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, label);
+    assert.equal(result.requiresReview, true, label);
+  });
+}
+
+test('keeps camera giveaway lookalikes and legitimate gear activity out of quarantine', () => {
+  const legitimateMessages = [
+    'Has anyone compared the Canon EOS R7 and Sony a7 IV for sports photography? I am especially curious about autofocus, sensor crop, and 4K heat limits.',
+    'I can loan the club Canon EOS R7 body and RF lens to the event photographer after they complete the equipment checkout form. Please return both to the gear room Friday.',
+    'Selling my used Nikon Z8 camera body and 24-70mm lens for $2,900 with shutter count and receipt posted in the marketplace channel. Local pickup through the club sale desk.',
+    'Giving away a free Canon RF lens cap that no longer fits my bag. DM me if you want this small plastic accessory.',
+    'Giving away a spare camera body cap from my old kit. Message me if interested in this plastic dust cover.',
+    'Free microfiber camera cleaning cloth at the checkout desk. DM me if you want it held until the meeting.',
+    'Giving away an unused camera strap from a conference gift bag. Contact me if interested.',
+    'Giving away a basic 52mm UV lens filter. DM me if this small accessory fits your lens.',
+    'Free padded camera case with a broken zipper. Message me if interested.',
+    'Giving away a spare camera battery. DM me if this small accessory fits your camera.',
+    'Giving away my extra camera charger for free. PM me if interested.',
+    'Free 64GB camera memory card after the meeting. Hit me up if you need one.',
+    'The photography club is giving away a donated Canon EOS R7 through its documented annual member raffle. Enter on the official club website; the winner will be announced publicly, and staff will not request DMs.',
+  ];
+
+  for (const content of legitimateMessages) {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone: false,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, false, content);
+    assert.equal(result.requiresReview, false, content);
+  }
+});
+
+test('routes a warning that quotes the exact Canon R7 giveaway to review without quarantine', () => {
+  const result = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: `Scam warning: Someone posted this message:\n\n${CANON_R7_BODY_AND_LENS_GIVEAWAY}`,
+    joinedTimestamp: ESTABLISHED_MEMBER,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(result.isLikelyScam, false);
+  assert.equal(result.requiresReview, true);
+});
+
 test('normalizes full-width text, zero-width characters, confusables, and separated contact phrases', () => {
   const result = analyzeScamMessage({
     accountCreatedTimestamp: OLD_ACCOUNT,
@@ -529,7 +713,7 @@ test('keeps common legitimate photography and electronics messages below the act
   }
 });
 
-test('uses account and server age only as modifiers for an already suspicious offer', () => {
+test('routes a simple established-member Nikon Z8 giveaway to review and uses age only as a modifier', () => {
   const content =
     'Giving away a Nikon Z8 camera. DM me if interested in getting it for free.';
   const established = analyzeScamMessage({
@@ -555,6 +739,7 @@ test('uses account and server age only as modifiers for an already suspicious of
   });
 
   assert.equal(established.isLikelyScam, false);
+  assert.equal(established.requiresReview, true);
   assert.equal(newcomer.isLikelyScam, true);
   assert.equal(harmlessNewcomer.isLikelyScam, false);
 });

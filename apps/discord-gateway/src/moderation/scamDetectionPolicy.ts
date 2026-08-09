@@ -1,8 +1,10 @@
 export type ScamSignalId =
   | 'broadcast_mention'
+  | 'camera_listing_fingerprint'
   | 'direct_contact'
   | 'giveaway_lure'
   | 'high_value_item'
+  | 'known_camera_giveaway_campaign'
   | 'new_account'
   | 'new_server_member'
   | 'off_platform_contact'
@@ -71,15 +73,41 @@ const CONFUSABLES = new Map<string, string>([
 ]);
 
 const GIVEAWAY_PATTERN =
-  /\b(?:give|giving|gave)\s+(?:it\s+)?(?:away|out)\b|\b(?:want\s+to\s+give|donat(?:e|ing)|handing\s+out)\b|\b(?:for\s+free|free\s+of\s+charge)\b|\bf\s*r\s*e\s*e\s+giveaway\b/u;
+  /\b(?:give|giving|gave)\s+(?:it\s+)?(?:away|out)\b|\b(?:want\s+to\s+give|donat(?:e|ing)|handing\s+out)\b|\b(?:for\s+free|free\s+of\s+charge|free\s+to\s+(?:a\s+)?good\s+home)\b|\bf\s*r\s*e\s*e\s+giveaway\b/u;
 const DIRECT_CONTACT_PATTERN =
-  /\b(?:d\s*m|direct\s+message|private\s+message|message|contact|inbox)\s+(?:me|if\s+(?:you\s+are\s+)?interested)\b|\bd\s*m\s+if\b|\breach\s+out(?:\s+if\s+interested)?\b/u;
+  /\b(?:d\s*m|p\s*m|direct\s+message|private\s+message|message|contact|inbox)\s+(?:me|if\s+(?:you\s+are\s+)?interested)\b|\b(?:d\s*m|p\s*m)\s+if\b|\b(?:reach\s+out|hit\s+me\s+up)(?:\s+if\s+interested)?\b/u;
 const OFF_PLATFORM_CONTACT_PATTERN =
   /\b(?:whats\s*app|telegram|signal\s+app|kik)\b|\bwa\s+me\b/u;
 const URGENCY_PATTERN =
   /\b(?:strictly\s+)?first\s+come\s+first\s+serve(?:d)?\b|\b(?:act\s+fast|hurry|today\s+only|limited\s+time)\b/u;
 const HIGH_VALUE_ITEM_PATTERN =
   /\b(?:mac\s*book|iphone|ipad|laptop|playstation|ps\s*5|xbox|camera|dslr|mirrorless|canon(?:\s+eos)?|nikon(?:\s+z)?|sony(?:\s+(?:alpha|a\s*\d))?|fuji(?:film)?|leica|hasselblad|gopro|drone|lens(?:es)?)\b/u;
+const CAMERA_DEVICE_PATTERN =
+  /\b(?:camera|dslr|mirrorless|canon\s+eos|nikon\s+z|sony\s+(?:alpha|a\s*\d)|fuji(?:film)?\s+x|leica\s+[a-z0-9]+|hasselblad\s+[a-z0-9]+)\b/u;
+const CAMERA_BODY_DETAIL_PATTERN =
+  /\b(?:body\s+only|camera\s+body|mirrorless\s+camera\s+body|dslr\s+body)\b/u;
+const CAMERA_SENSOR_DETAIL_PATTERN =
+  /\b(?:\d{1,3}(?:\s+\d)?\s*(?:mp|mega\s*pixel(?:s)?)|aps\s*c|full\s*frame|cmos\s+sensor|stacked\s+sensor)\b/u;
+const CAMERA_VIDEO_DETAIL_PATTERN =
+  /\b[2-9](?:\s+\d)?\s*k(?:\s+\d{2,3}\s*p)?\s+(?:uhd\s+)?(?:video|recording)\b/u;
+const CAMERA_GEAR_BUNDLE_PATTERN =
+  /\b(?:(?:comes?\s+with|includes?|bundled\s+with|ships?\s+with)\s+(?:an?\s+)?(?:extra|spare|additional|second)\s+(?:[a-z0-9]+\s+){0,3}(?:lens|battery|charger|camera\s+bag|memory\s+card)|(?:extra|spare|additional|second)\s+(?:[a-z0-9]+\s+){0,3}(?:lens|battery|charger|camera\s+bag|memory\s+card)\s+(?:included|provided))\b/u;
+const CAMERA_ACCESSORY_ONLY_PATTERN =
+  /\b(?:lens\s+cap|body\s+cap|(?:lens\s+|camera\s+)?(?:cleaning\s+)?cloth|camera\s+(?:strap|case|bag|battery|charger|memory\s+card)|(?:uv|nd)\s+(?:lens\s+)?filter|(?:spare|extra)\s+(?:[a-z0-9]+\s+){0,3}(?:camera\s+)?(?:battery|charger|memory\s+card))\b/u;
+const CAMERA_BODY_CAP_PATTERN = /\b(?:camera\s+)?body\s+cap\b/u;
+const KNOWN_CAMERA_GIVEAWAY_MODEL_PATTERN = /\bcanon\s+eos\s+r\s*7\b/u;
+const KNOWN_CAMERA_GIVEAWAY_RESOLUTION_PATTERN =
+  /\b32(?:\s+5)?\s*(?:mp|mega\s*pixel(?:s)?)\b/u;
+const KNOWN_CAMERA_GIVEAWAY_SENSOR_PATTERN = /\baps\s*c\s+cmos\s+sensor\b/u;
+const KNOWN_CAMERA_GIVEAWAY_EXTRA_LENS_PATTERN =
+  /\bcomes?\s+with\s+(?:an?\s+)?extra\s+lens\b/u;
+const KNOWN_CAMERA_GIVEAWAY_MARKER_PATTERNS = [
+  /\bbody\s+only\b/u,
+  /\bhybrid\s+camera\b/u,
+  /\b(?:for\s+)?sports\s+action\b/u,
+  /\bcontent\s+creators?\b/u,
+  /\bvlogging\s+camera\b/u,
+] as const;
 const REPLACEMENT_STORY_PATTERN =
   /\b(?:just\s+got|got|bought)\s+(?:myself\s+)?a\s+new\b|\b(?:new\s+model|because\s+i\s+upgraded|since\s+i\s+upgraded|perfect\s+(?:health|condition)|good\s+as\s+new|cannot\s+afford|can\s+not\s+afford|can\s+t\s+afford|in\s+need\s+of)\b/u;
 const PAYMENT_REQUEST_PATTERN =
@@ -136,6 +164,55 @@ function matchesCorruptedNounOmittedTicketTemplate(normalizedContent: string) {
   );
 }
 
+function matchesCameraRetailListing(normalizedContent: string) {
+  if (!CAMERA_DEVICE_PATTERN.test(normalizedContent)) {
+    return false;
+  }
+
+  const detailCount = [
+    CAMERA_BODY_DETAIL_PATTERN,
+    CAMERA_SENSOR_DETAIL_PATTERN,
+    CAMERA_VIDEO_DETAIL_PATTERN,
+  ].filter((pattern) => pattern.test(normalizedContent)).length;
+  const hasGearBundle = CAMERA_GEAR_BUNDLE_PATTERN.test(normalizedContent);
+
+  return detailCount >= 2 || (hasGearBundle && detailCount >= 1);
+}
+
+function matchesKnownCameraGiveawayCampaign(normalizedContent: string) {
+  if (
+    !KNOWN_CAMERA_GIVEAWAY_MODEL_PATTERN.test(normalizedContent) ||
+    !KNOWN_CAMERA_GIVEAWAY_RESOLUTION_PATTERN.test(normalizedContent) ||
+    !KNOWN_CAMERA_GIVEAWAY_SENSOR_PATTERN.test(normalizedContent) ||
+    !KNOWN_CAMERA_GIVEAWAY_EXTRA_LENS_PATTERN.test(normalizedContent)
+  ) {
+    return false;
+  }
+
+  const markerCount = KNOWN_CAMERA_GIVEAWAY_MARKER_PATTERNS.filter((pattern) =>
+    pattern.test(normalizedContent),
+  ).length;
+
+  return markerCount >= 2;
+}
+
+function matchesCameraDeviceOffer(normalizedContent: string) {
+  if (!CAMERA_DEVICE_PATTERN.test(normalizedContent)) {
+    return false;
+  }
+
+  const hasTechnicalDetails =
+    (CAMERA_BODY_DETAIL_PATTERN.test(normalizedContent) &&
+      !CAMERA_BODY_CAP_PATTERN.test(normalizedContent)) ||
+    CAMERA_SENSOR_DETAIL_PATTERN.test(normalizedContent) ||
+    CAMERA_VIDEO_DETAIL_PATTERN.test(normalizedContent);
+
+  return (
+    !CAMERA_ACCESSORY_ONLY_PATTERN.test(normalizedContent) ||
+    hasTechnicalDetails
+  );
+}
+
 const SIGNAL_RULES: readonly ScamSignalRule[] = [
   {
     id: 'broadcast_mention',
@@ -174,6 +251,18 @@ const SIGNAL_RULES: readonly ScamSignalRule[] = [
     id: 'high_value_item',
     matches: ({ normalizedContent }) =>
       HIGH_VALUE_ITEM_PATTERN.test(normalizedContent),
+    points: 3,
+  },
+  {
+    id: 'camera_listing_fingerprint',
+    matches: ({ normalizedContent }) =>
+      matchesCameraRetailListing(normalizedContent),
+    points: 5,
+  },
+  {
+    id: 'known_camera_giveaway_campaign',
+    matches: ({ normalizedContent }) =>
+      matchesKnownCameraGiveawayCampaign(normalizedContent),
     points: 3,
   },
   {
@@ -262,12 +351,16 @@ export function analyzeScamMessage(
   const hasTicketTemplateFingerprint = signalIds.includes(
     'ticket_template_fingerprint',
   );
+  const hasCameraListingFingerprint = signalIds.includes(
+    'camera_listing_fingerprint',
+  );
   const hasContact = signalIds.some((id) =>
     ['direct_contact', 'off_platform_contact', 'phone_number'].includes(id),
   );
   const hasStrongCorroboration = signalIds.some((id) =>
     [
       'broadcast_mention',
+      'known_camera_giveaway_campaign',
       'new_account',
       'new_server_member',
       'off_platform_contact',
@@ -293,6 +386,10 @@ export function analyzeScamMessage(
     score >= 17;
   const isSuspiciousTicketOffer =
     hasTicketOffer && hasUnableToAttendStory && hasContact;
+  const isSuspiciousCameraGiveaway =
+    hasRequiredOffer &&
+    matchesCameraDeviceOffer(normalizedContent) &&
+    (hasContact || hasCameraListingFingerprint);
   const isNounOmittedTicketNearMatch =
     matchesNounOmittedTicketStructure(normalizedContent) && hasContact;
   const isActionableScam = isGiveawayScam || isTicketTemplateScam;
@@ -304,6 +401,7 @@ export function analyzeScamMessage(
     requiresReview:
       !isLikelyScam &&
       (isActionableScam ||
+        isSuspiciousCameraGiveaway ||
         isSuspiciousTicketOffer ||
         isNounOmittedTicketNearMatch),
     score,
