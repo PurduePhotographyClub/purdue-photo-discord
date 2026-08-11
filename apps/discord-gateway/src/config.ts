@@ -19,6 +19,7 @@ export interface GatewayConfig {
   httpServer: GatewayHttpServerConfig;
   intents: GatewayIntentBits[];
   partials: Partials[];
+  scamModeration: GatewayScamModerationConfig;
   status: GatewayPresenceStatus;
   workerSecret: string;
   workerInternalEventUrl: string;
@@ -28,12 +29,30 @@ export interface GatewayConfig {
   };
 }
 
+export interface GatewayScamModerationConfig {
+  alertChannelId: string | null;
+  enabled: boolean;
+  excludedChannelIds: ReadonlySet<string>;
+  guildId: string;
+  protectedRoleIds: ReadonlySet<string>;
+  restrictedRoleId: string;
+  verifiedRoleId: string;
+}
+
 export interface GatewayHttpServerConfig {
   host: string;
   port: number;
 }
 
 export type GatewayPresenceStatus = 'dnd' | 'idle' | 'invisible' | 'online';
+
+const DEFAULT_SCAM_RESTRICTED_ROLE_ID = '1515784633374212247';
+const DEFAULT_VERIFIED_ROLE_ID = '1503180707550199920';
+const DEFAULT_HONEYPOT_CHANNEL_ID = '1519110560925483008';
+const DEFAULT_PROTECTED_ROLE_IDS = [
+  '1364457359061155870',
+  '1198569577383198730',
+] as const;
 
 export function readGatewayConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -50,6 +69,12 @@ export function readGatewayConfig(
     'FORWARD_MESSAGE_CONTENT',
     false,
   );
+  const scamModeration = readScamModerationConfig(env);
+  if (scamModeration.enabled && forwardMessageContent) {
+    throw new Error(
+      'FORWARD_MESSAGE_CONTENT must stay disabled when scam moderation is enabled.',
+    );
+  }
 
   return {
     activityName: readOptionalString(env, 'DISCORD_ACTIVITY_NAME'),
@@ -71,8 +96,13 @@ export function readGatewayConfig(
       forwardMessageContent,
       forwardMessages,
       forwardReactions,
+      scamModerationEnabled: scamModeration.enabled,
     }),
-    partials: computePartials({ forwardReactions }),
+    partials: computePartials({
+      forwardReactions,
+      scamModerationEnabled: scamModeration.enabled,
+    }),
+    scamModeration,
     status: readPresenceStatus(env, 'DISCORD_GATEWAY_STATUS', 'online'),
     workerSecret: readRequiredString(env, 'WORKER_SECRET'),
     workerInternalEventUrl: readWorkerInternalEventUrl(env),
@@ -84,6 +114,7 @@ function computeGatewayIntents(options: {
   forwardMessageContent: boolean;
   forwardMessages: boolean;
   forwardReactions: boolean;
+  scamModerationEnabled: boolean;
 }): GatewayIntentBits[] {
   // Start with the one intent every guild bot needs, then opt into the event
   // families that deployment config actually enables.
@@ -96,7 +127,7 @@ function computeGatewayIntents(options: {
     intents.add(GatewayIntentBits.GuildMessageReactions);
   }
 
-  if (options.forwardMessages) {
+  if (options.forwardMessages || options.scamModerationEnabled) {
     intents.add(GatewayIntentBits.GuildMessages);
   }
 
@@ -104,23 +135,87 @@ function computeGatewayIntents(options: {
     intents.add(GatewayIntentBits.GuildMembers);
   }
 
-  if (options.forwardMessages && options.forwardMessageContent) {
+  if (
+    (options.forwardMessages && options.forwardMessageContent) ||
+    options.scamModerationEnabled
+  ) {
     intents.add(GatewayIntentBits.MessageContent);
   }
 
   return [...intents];
 }
 
-function computePartials(options: { forwardReactions: boolean }): Partials[] {
-  // Partials are only useful for reaction forwarding. Leaving them off otherwise
-  // keeps discord.js payloads a little simpler.
-  if (!options.forwardReactions) {
+function readScamModerationConfig(
+  env: NodeJS.ProcessEnv,
+): GatewayScamModerationConfig {
+  const enabled = readBoolean(env, 'SCAM_MODERATION_ENABLED', false);
+  if (!enabled) {
+    return {
+      alertChannelId: null,
+      enabled: false,
+      excludedChannelIds: new Set(),
+      guildId: '',
+      protectedRoleIds: new Set(),
+      restrictedRoleId: '',
+      verifiedRoleId: '',
+    };
+  }
+
+  const guildId = readRequiredSnowflake(env, 'DISCORD_GUILD_ID');
+  const restrictedRoleId =
+    readOptionalSnowflake(env, 'DISCORD_SCAM_ROLE_ID') ??
+    DEFAULT_SCAM_RESTRICTED_ROLE_ID;
+  const verifiedRoleId =
+    readOptionalSnowflake(env, 'DISCORD_VERIFIED_ROLE_ID') ??
+    DEFAULT_VERIFIED_ROLE_ID;
+
+  if (restrictedRoleId === verifiedRoleId) {
+    throw new Error(
+      'DISCORD_SCAM_ROLE_ID and DISCORD_VERIFIED_ROLE_ID must be different.',
+    );
+  }
+
+  const alertChannelId = readRequiredSnowflake(
+    env,
+    'DISCORD_SCAM_ALERT_CHANNEL_ID',
+  );
+  const excludedChannelIds = new Set<string>([
+    DEFAULT_HONEYPOT_CHANNEL_ID,
+    ...readSnowflakeSet(env, 'DISCORD_SCAM_EXCLUDED_CHANNEL_IDS'),
+    alertChannelId,
+  ]);
+  const configuredProtectedRoleIds = readSnowflakeSet(
+    env,
+    'DISCORD_SCAM_PROTECTED_ROLE_IDS',
+  );
+
+  return {
+    alertChannelId,
+    enabled,
+    excludedChannelIds,
+    guildId,
+    protectedRoleIds:
+      configuredProtectedRoleIds.size > 0
+        ? configuredProtectedRoleIds
+        : new Set(DEFAULT_PROTECTED_ROLE_IDS),
+    restrictedRoleId,
+    verifiedRoleId,
+  };
+}
+
+function computePartials(options: {
+  forwardReactions: boolean;
+  scamModerationEnabled: boolean;
+}): Partials[] {
+  if (!options.forwardReactions && !options.scamModerationEnabled) {
     return [];
   }
 
-  // Reactions may arrive for uncached messages/users after a restart. Partials
-  // let the gateway forward the IDs it has instead of dropping the event.
-  return [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User];
+  return [
+    Partials.Message,
+    Partials.Channel,
+    ...(options.forwardReactions ? [Partials.Reaction, Partials.User] : []),
+  ];
 }
 
 function readWorkerInternalEventUrl(env: NodeJS.ProcessEnv): string {
@@ -167,6 +262,25 @@ function readRequiredString(env: NodeJS.ProcessEnv, key: string): string {
     throw new Error(`${key} is required.`);
   }
 
+  return value;
+}
+
+function readRequiredSnowflake(env: NodeJS.ProcessEnv, key: string): string {
+  const value = readRequiredString(env, key);
+  assertDiscordSnowflake(value, key);
+  return value;
+}
+
+function readOptionalSnowflake(
+  env: NodeJS.ProcessEnv,
+  key: string,
+): string | undefined {
+  const value = readOptionalString(env, key);
+  if (!value) {
+    return undefined;
+  }
+
+  assertDiscordSnowflake(value, key);
   return value;
 }
 
@@ -285,6 +399,24 @@ function readStringSet(
       return trimmedItem ? [trimmedItem] : [];
     }),
   );
+}
+
+function readSnowflakeSet(
+  env: NodeJS.ProcessEnv,
+  key: string,
+): ReadonlySet<string> {
+  const values = readStringSet(env, key);
+  for (const value of values) {
+    assertDiscordSnowflake(value, key);
+  }
+
+  return values;
+}
+
+function assertDiscordSnowflake(value: string, key: string) {
+  if (!/^\d{17,20}$/u.test(value)) {
+    throw new Error(`${key} must contain a valid Discord snowflake.`);
+  }
 }
 
 function validateHttpUrl(value: string, key: string): string {

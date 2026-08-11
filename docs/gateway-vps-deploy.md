@@ -24,7 +24,7 @@ npm run lint
 npm run build:gateway
 ```
 
-The Gateway is intentionally small: it connects to Discord, keeps presence online, filters configured event families, signs event payloads, and forwards them to the Worker.
+The Gateway connects to Discord, keeps presence online, handles the latency-sensitive scam quarantine locally, filters configured event families, signs event payloads, and forwards normal workflow events to the Worker. Scam message content is inspected in memory on the VPS and is not forwarded or written to logs.
 
 ## Generate The Gateway Deploy Package
 
@@ -117,6 +117,7 @@ Allow the service user to restart only this service through sudoers. Keep the ex
 
 - The deploy package is Gateway-only.
 - Runtime configuration lives outside git.
+- Scam moderation is restricted to one configured guild, validates its role hierarchy at startup, and never logs or forwards message content.
 - Gateway-to-Worker traffic is signed and replay-protected.
 - Worker-to-Gateway control traffic uses Workers VPC through Cloudflare Tunnel; no public VPS IP or port is required in Worker config.
 - Gateway event scope should stay minimal; only enable event families that are actively used.

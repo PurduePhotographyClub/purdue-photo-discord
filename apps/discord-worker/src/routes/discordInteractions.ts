@@ -34,6 +34,7 @@ import {
   isStudioDirectCancelButtonCustomId,
   isStudioModalCustomId,
 } from '../services/discordStudioScheduleService';
+import { isDiscordScamReviewButtonCustomId } from '../services/discordScamReviewService';
 import {
   InteractionResponseFlags,
   InteractionResponseType,
@@ -125,6 +126,7 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
     isEquipmentTermsButtonCustomId(customId) ||
     isJobsAccessButtonCustomId(customId) ||
     isEquipmentLoanActionButtonCustomId(customId) ||
+    isDiscordScamReviewButtonCustomId(customId) ||
     isStudioDirectCancelButtonCustomId(customId)
   );
 }

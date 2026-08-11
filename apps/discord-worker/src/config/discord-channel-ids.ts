@@ -7,6 +7,7 @@ export const DISCORD_CHANNEL_IDS = {
   memberReports: '1532401078828535919',
   photographerRequestsIndividual: '1512507940303671546',
   photographerRequestsOrganization: '1512508172139499670',
+  scamAlerts: '1232870129000386620',
   verification: '1512506154079486004',
   wiki: '1512574749090517132',
 } as const;

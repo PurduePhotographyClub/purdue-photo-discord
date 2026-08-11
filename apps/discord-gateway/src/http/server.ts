@@ -16,6 +16,7 @@ import type { Logger } from '../utils/logger.js';
 import { writeJson } from './responses.js';
 import { handleHealthRequest } from './routes/health.js';
 import { handlePresenceRequest } from './routes/presence.js';
+import { handleScamReviewRequest } from './routes/scamReview.js';
 
 export interface GatewayHttpServer {
   start(): Promise<void>;
@@ -24,7 +25,10 @@ export interface GatewayHttpServer {
 
 export function createGatewayHttpServer(
   config: GatewayConfig,
-  gateway: Pick<DiscordGatewayRunner, 'getHealth' | 'updatePresence'>,
+  gateway: Pick<
+    DiscordGatewayRunner,
+    'getHealth' | 'reviewScam' | 'updatePresence'
+  >,
   logger: Logger,
 ): GatewayHttpServer {
   // Public factory kept small so tests and the entrypoint do not need to know
@@ -34,7 +38,10 @@ export function createGatewayHttpServer(
 
 function createConfiguredHttpServer(
   config: GatewayConfig,
-  gateway: Pick<DiscordGatewayRunner, 'getHealth' | 'updatePresence'>,
+  gateway: Pick<
+    DiscordGatewayRunner,
+    'getHealth' | 'reviewScam' | 'updatePresence'
+  >,
   logger: Logger,
 ): GatewayHttpServer {
   // Track start state ourselves because Node's Server does not expose a simple
@@ -61,7 +68,7 @@ function createConfiguredHttpServer(
 
       logger.info('Gateway HTTP server is listening.', {
         host: config.httpServer.host,
-        paths: ['/health', '/presence'],
+        paths: ['/health', '/presence', '/scam-review'],
         port: config.httpServer.port,
       });
     },
@@ -83,7 +90,10 @@ async function handleGatewayRequest(
   request: IncomingMessage,
   response: ServerResponse,
   config: GatewayConfig,
-  gateway: Pick<DiscordGatewayRunner, 'getHealth' | 'updatePresence'>,
+  gateway: Pick<
+    DiscordGatewayRunner,
+    'getHealth' | 'reviewScam' | 'updatePresence'
+  >,
   logger: Logger,
 ): Promise<void> {
   // Route by path only; the route modules handle methods and payload rules.
@@ -101,6 +111,11 @@ async function handleGatewayRequest(
 
   if (url.pathname === '/presence') {
     await handlePresenceRequest(request, response, config, gateway, logger);
+    return;
+  }
+
+  if (url.pathname === '/scam-review') {
+    await handleScamReviewRequest(request, response, config, gateway, logger);
     return;
   }
 

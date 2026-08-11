@@ -21,9 +21,19 @@ import {
 import type { GatewayConfig, GatewayPresenceStatus } from '../config.js';
 import type { WorkerEventForwarder } from './forwarder.js';
 import type { Logger } from '../utils/logger.js';
+import {
+  createDiscordScamModerator,
+  type DiscordScamModerationHealth,
+  type DiscordScamModerator,
+} from '../moderation/discordScamModerator.js';
+import type {
+  DiscordScamReviewRequest,
+  DiscordScamReviewResult,
+} from '../moderation/scamReviewTypes.js';
 
 export interface DiscordGatewayRunner {
   getHealth(): DiscordGatewayHealthSnapshot;
+  reviewScam(input: DiscordScamReviewRequest): Promise<DiscordScamReviewResult>;
   start(): Promise<void>;
   stop(): void;
   updatePresence(
@@ -53,6 +63,7 @@ export interface DiscordGatewayHealthSnapshot {
     messages: boolean;
     reactions: boolean;
   };
+  moderation: DiscordScamModerationHealth;
   presence: DiscordGatewayPresenceSnapshot;
 }
 
@@ -97,6 +108,10 @@ export function createDiscordGatewayRunner(
     intents: config.intents,
     partials: config.partials,
   });
+  const scamModerator = createDiscordScamModerator(
+    config.scamModeration,
+    logger,
+  );
 
   client.once(Events.ClientReady, (readyClient) => {
     status = 'ready';
@@ -112,6 +127,7 @@ export function createDiscordGatewayRunner(
     });
 
     applyPresence(readyClient.user);
+    void scamModerator.initialize(readyClient);
   });
 
   client.on(Events.Error, (error) => {
@@ -215,6 +231,26 @@ export function createDiscordGatewayRunner(
     });
   }
 
+  if (config.scamModeration.enabled) {
+    client.on(Events.MessageCreate, (message) => {
+      void handleScamModeration(
+        scamModerator,
+        message,
+        'MESSAGE_CREATE',
+        logger,
+      );
+    });
+
+    client.on(Events.MessageUpdate, (_oldMessage, newMessage) => {
+      void handleScamModeration(
+        scamModerator,
+        newMessage,
+        'MESSAGE_UPDATE',
+        logger,
+      );
+    });
+  }
+
   if (config.forwardMembers) {
     client.on(Events.GuildMemberAdd, (member) => {
       void forwardDiscordJsEvent(
@@ -251,6 +287,7 @@ export function createDiscordGatewayRunner(
     getHealth() {
       // Return a snapshot, not live references, so /health can serialize it
       // safely at any moment during reconnects or shutdown.
+      const moderation = scamModerator.getHealth();
       const snapshot: DiscordGatewayHealthSnapshot = {
         discordWebSocketStatus: client.ws.status,
         forwarding: {
@@ -260,7 +297,8 @@ export function createDiscordGatewayRunner(
           messages: config.forwardMessages,
           reactions: config.forwardReactions,
         },
-        ok: status === 'ready',
+        moderation,
+        ok: isDiscordGatewayHealthy(status, moderation),
         presence: getPresenceSnapshot(),
         service: 'pccbot-discord-gateway',
         status,
@@ -296,6 +334,10 @@ export function createDiscordGatewayRunner(
       }
 
       return snapshot;
+    },
+
+    reviewScam(input) {
+      return scamModerator.review(input);
     },
     async start() {
       // discord.js handles reconnects after login; this call starts the first
@@ -391,6 +433,25 @@ async function forwardDiscordJsEvent(
   }
 }
 
+async function handleScamModeration(
+  moderator: DiscordScamModerator,
+  message: Message | PartialMessage,
+  eventType: 'MESSAGE_CREATE' | 'MESSAGE_UPDATE',
+  logger: Logger,
+) {
+  try {
+    await moderator.handle(message, eventType);
+  } catch (error) {
+    logger.error('Unexpected scam moderation failure.', {
+      channelId: message.channelId,
+      error,
+      eventType,
+      guildId: message.guildId ?? undefined,
+      messageId: message.id,
+    });
+  }
+}
+
 function serializeReaction(
   reaction: MessageReaction | PartialMessageReaction,
   user?: User | PartialUser,
@@ -477,6 +538,15 @@ function compactRecord(
       const [, value] = entry;
       return value !== undefined;
     }),
+  );
+}
+
+export function isDiscordGatewayHealthy(
+  status: DiscordGatewayConnectionStatus,
+  moderation: DiscordScamModerationHealth,
+) {
+  return (
+    status === 'ready' && (!moderation.enabled || moderation.ready === true)
   );
 }
 
