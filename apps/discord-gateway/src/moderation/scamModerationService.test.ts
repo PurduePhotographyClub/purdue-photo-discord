@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   createScamModerationService,
   type ScamMessageContext,
+  type ScamModerationAlert,
   type ScamModerationActions,
 } from './scamModerationService.js';
 
@@ -139,6 +140,37 @@ test('privately alerts on review-only scam reports and face-value ticket pitches
     assert.equal(result.analysis?.requiresReview, true);
     assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`]);
   }
+});
+
+test('includes source evidence and distinguishes reporters from suspicious offers', async () => {
+  const alerts: ScamModerationAlert[] = [];
+  const baseActions = createActions([]);
+  const actions: ScamModerationActionsWithAnnouncement = {
+    ...baseActions,
+    sendAlert: async (_alertChannelId, alert) => {
+      alerts.push(alert);
+    },
+  };
+
+  await createService().moderate(
+    createMessage({
+      content: REPORTED_TICKET_TEMPLATE,
+      mentionsEveryone: false,
+    }),
+    actions,
+  );
+  await createService().moderate(
+    createMessage({
+      content: FACE_VALUE_COMPOUND_TICKET_SALE,
+      mentionsEveryone: false,
+    }),
+    actions,
+  );
+
+  assert.equal(alerts[0]?.content, REPORTED_TICKET_TEMPLATE);
+  assert.equal(alerts[0]?.reviewReason, 'reported_scam');
+  assert.equal(alerts[1]?.content, FACE_VALUE_COMPOUND_TICKET_SALE);
+  assert.equal(alerts[1]?.reviewReason, 'suspicious_offer');
 });
 
 test('retries review-only moderation when the private alert fails', async () => {

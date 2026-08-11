@@ -26,9 +26,14 @@ import {
   type DiscordScamModerationHealth,
   type DiscordScamModerator,
 } from '../moderation/discordScamModerator.js';
+import type {
+  DiscordScamReviewRequest,
+  DiscordScamReviewResult,
+} from '../moderation/scamReviewTypes.js';
 
 export interface DiscordGatewayRunner {
   getHealth(): DiscordGatewayHealthSnapshot;
+  reviewScam(input: DiscordScamReviewRequest): Promise<DiscordScamReviewResult>;
   start(): Promise<void>;
   stop(): void;
   updatePresence(
@@ -329,6 +334,10 @@ export function createDiscordGatewayRunner(
       }
 
       return snapshot;
+    },
+
+    reviewScam(input) {
+      return scamModerator.review(input);
     },
     async start() {
       // discord.js handles reconnects after login; this call starts the first

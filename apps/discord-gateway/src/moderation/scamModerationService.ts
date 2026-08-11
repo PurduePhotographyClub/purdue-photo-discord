@@ -42,12 +42,14 @@ export type ScamModerationActionId =
 
 export interface ScamModerationAlert {
   channelId: string;
+  content: string;
   eventType: ScamGatewayMessageEventType;
   failedActions: readonly ScamModerationActionId[];
   guildId: string;
   messageId: string;
   protectedMember: boolean;
   reviewOnly: boolean;
+  reviewReason: 'reported_scam' | 'suspicious_offer';
   score: number;
   signalIds: readonly ScamSignalId[];
   userId: string;
@@ -155,12 +157,16 @@ export function createScamModerationService(
           ? runAction('send_alert', () =>
               actions.sendAlert(config.alertChannelId!, {
                 channelId: message.channelId,
+                content: message.content,
                 eventType: message.eventType,
                 failedActions,
                 guildId: config.guildId,
                 messageId: message.messageId,
                 protectedMember: message.protectedMember,
                 reviewOnly: analysis.requiresReview,
+                reviewReason: analysis.reportedContext
+                  ? 'reported_scam'
+                  : 'suspicious_offer',
                 score: analysis.score,
                 signalIds: analysis.signalIds,
                 userId: message.userId,

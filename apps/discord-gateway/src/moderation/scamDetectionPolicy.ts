@@ -29,6 +29,7 @@ export interface ScamDetectionInput {
 
 export interface ScamDetectionResult {
   isLikelyScam: boolean;
+  reportedContext: boolean;
   requiresReview: boolean;
   score: number;
   signalIds: ScamSignalId[];
@@ -657,6 +658,7 @@ export function analyzeScamMessage(
 
   return {
     isLikelyScam,
+    reportedContext: isReportedScam,
     requiresReview:
       !isLikelyScam &&
       (isActionableScam ||

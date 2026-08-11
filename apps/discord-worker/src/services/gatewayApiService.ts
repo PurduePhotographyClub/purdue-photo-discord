@@ -26,6 +26,27 @@ export interface GatewayPresenceSnapshot {
   updatedAt: string;
 }
 
+export interface GatewayScamReviewRequest {
+  action: 'confirm' | 'dismiss' | 'reviewed';
+  actorId: string;
+  alertMessageId: string;
+  reviewId: string;
+}
+
+export interface GatewayScamReviewResult {
+  message: string;
+  ok: boolean;
+  status:
+    | 'already_resolved'
+    | 'confirmed'
+    | 'dismissed'
+    | 'expired'
+    | 'forbidden'
+    | 'message_changed'
+    | 'reviewed'
+    | 'unavailable';
+}
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -62,6 +83,25 @@ export async function updateGatewayPresence(
     });
   }
 
+  return responseBody;
+}
+
+export async function reviewGatewayScam(
+  env: Env,
+  review: GatewayScamReviewRequest,
+): Promise<GatewayScamReviewResult> {
+  const responseBody = await requestGatewayApi(env, '/scam-review', review);
+  if (!isGatewayScamReviewResult(responseBody)) {
+    logger.warn('Gateway returned an invalid scam review response.', {
+      path: '/scam-review',
+    });
+    throw new AppError('Gateway returned an invalid scam review response.', {
+      code: 'GATEWAY_API_ERROR',
+      details: responseBody,
+      expose: true,
+      status: 502,
+    });
+  }
   return responseBody;
 }
 
@@ -174,6 +214,32 @@ function isGatewayPresenceSnapshot(
     value.ok === true &&
     isGatewayPresenceStatus(value.status) &&
     typeof value.updatedAt === 'string'
+  );
+}
+
+function isGatewayScamReviewResult(
+  value: unknown,
+): value is GatewayScamReviewResult {
+  return (
+    isRecord(value) &&
+    typeof value.ok === 'boolean' &&
+    typeof value.message === 'string' &&
+    isGatewayScamReviewStatus(value.status)
+  );
+}
+
+function isGatewayScamReviewStatus(
+  value: unknown,
+): value is GatewayScamReviewResult['status'] {
+  return (
+    value === 'already_resolved' ||
+    value === 'confirmed' ||
+    value === 'dismissed' ||
+    value === 'expired' ||
+    value === 'forbidden' ||
+    value === 'message_changed' ||
+    value === 'reviewed' ||
+    value === 'unavailable'
   );
 }
 
