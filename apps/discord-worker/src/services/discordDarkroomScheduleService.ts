@@ -1358,8 +1358,7 @@ async function syncDarkroomInteractionState(
   input: {
     syncEvent?: DarkroomScheduleSyncInternalEvent | undefined;
     weeklyJoinMessageEvents?:
-      | DarkroomScheduleWeeklyJoinMessageInternalEvent[]
-      | undefined;
+      DarkroomScheduleWeeklyJoinMessageInternalEvent[] | undefined;
   },
 ) {
   // Component interactions have a short acknowledgement window. Keep these

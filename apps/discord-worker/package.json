@@ -17,6 +17,6 @@
   "dependencies": {
     "@pccbot/shared": "file:../../packages/shared",
     "discord-interactions": "^4.4.0",
-    "itty-router": "^5.0.23"
+    "itty-router": "^5.0.24"
   }
 }

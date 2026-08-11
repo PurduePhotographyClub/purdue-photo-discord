@@ -88,9 +88,7 @@ export interface DiscordResolvedUser {
 }
 
 export type DiscordInteractionData =
-  | DiscordApplicationCommandData
-  | DiscordComponentData
-  | DiscordModalSubmitData;
+  DiscordApplicationCommandData | DiscordComponentData | DiscordModalSubmitData;
 
 export interface DiscordInteraction {
   id?: Snowflake;
