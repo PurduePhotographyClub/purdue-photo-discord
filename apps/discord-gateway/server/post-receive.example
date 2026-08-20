@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+umask 027
+
+exec /usr/bin/flock \
+  --exclusive \
+  /opt/pccbot-discord-gateway/.deploy.lock \
+  /usr/bin/node \
+  /usr/local/libexec/pccbot-gateway-server-deploy.mjs \
+  post-receive

@@ -6,12 +6,27 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=pccbot
-WorkingDirectory=/opt/pccbot-discord-gateway
-ExecStart=/usr/bin/npm start
+Group=pccbot
+SupplementaryGroups=pccbot-release
+WorkingDirectory=/opt/pccbot-discord-gateway/current
+EnvironmentFile=/etc/pccbot-discord-gateway.env
+ExecStart=/usr/bin/node --enable-source-maps dist/index.js
 Restart=always
 RestartSec=5
+TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
 MemoryMax=350M
 
 [Install]

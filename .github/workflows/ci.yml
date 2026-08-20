@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_merged_main:
+        description: Deploy the verified main commit after a trusted merge
+        required: true
+        default: false
+        type: boolean
   pull_request:
   push:
     branches:
@@ -16,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm
@@ -39,9 +45,6 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: React Doctor
-        run: npm run doctor
-
       - name: Dependency audit
         run: npm audit --audit-level=high
 
@@ -54,54 +57,229 @@ jobs:
           fi
 
       - name: Upload worker deploy artifact
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v7
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.deploy_merged_main)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: discord-worker-dist
           path: apps/discord-worker/dist
           if-no-files-found: error
 
-  deploy:
-    name: deploy
+      - name: Package verified gateway release
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.deploy_merged_main)
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/discord-gateway-release"
+          install_check="$RUNNER_TEMP/discord-gateway-install-check"
+
+          node apps/discord-gateway/server/gateway-release.mjs package "$release"
+          cp -R "$release" "$install_check"
+          npm ci \
+            --prefix "$install_check" \
+            --omit=dev \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund
+          node --check "$install_check/dist/index.js"
+          node apps/discord-gateway/server/gateway-release.mjs verify "$release"
+
+      - name: Upload gateway deploy artifact
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.deploy_merged_main)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: discord-gateway-release-${{ github.sha }}
+          path: ${{ runner.temp }}/discord-gateway-release
+          if-no-files-found: error
+
+      - name: React Doctor
+        run: npm run doctor
+
+  deploy-worker:
+    name: deploy-worker
     runs-on: ubuntu-latest
     needs: verify
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.deploy_merged_main)
     environment: production
     concurrency:
       group: discord-worker-production
       cancel-in-progress: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
       - name: Download worker deploy artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: discord-worker-dist
           path: apps/discord-worker/dist
 
-      - name: Check Cloudflare deploy token
-        id: cloudflare-token
+      - name: Require Cloudflare deploy token
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping Cloudflare deployment."
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "::error::CLOUDFLARE_API_TOKEN is required for production deployment."
+            exit 1
           fi
 
-      - name: Deploy
-        if: steps.cloudflare-token.outputs.available == 'true'
+      - name: Deploy Worker
         env:
           CLOUDFLARE_ACCOUNT_ID: 63a413648250a48c6caa17e9963f5ee1
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         working-directory: apps/discord-worker
         run: npx --yes wrangler@4.120.0 deploy dist/index.js --no-bundle --config wrangler.toml
+
+  deploy-gateway:
+    name: deploy-gateway
+    runs-on: ubuntu-latest
+    needs: verify
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.deploy_merged_main)
+    environment: production
+    timeout-minutes: 12
+    concurrency:
+      group: discord-gateway-production
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+
+      - name: Download verified gateway release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: discord-gateway-release-${{ github.sha }}
+          path: ${{ runner.temp }}/discord-gateway-release
+
+      - name: Configure restricted Gateway SSH identity
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.GATEWAY_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.GATEWAY_DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.GATEWAY_DEPLOY_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.GATEWAY_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.GATEWAY_VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
+            echo "::error::GATEWAY_DEPLOY_HOST is missing or invalid."
+            exit 1
+          fi
+          if [[ "$DEPLOY_USER" != "pccbot-deploy" ]]; then
+            echo "::error::GATEWAY_DEPLOY_USER must be pccbot-deploy."
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]] || (( DEPLOY_PORT < 1 || DEPLOY_PORT > 65535 )); then
+            echo "::error::GATEWAY_DEPLOY_PORT is missing or invalid."
+            exit 1
+          fi
+          if [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "::error::Gateway SSH credentials are not configured."
+            exit 1
+          fi
+
+          install -d -m 700 "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy verified Gateway release
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.GATEWAY_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.GATEWAY_DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.GATEWAY_DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/discord-gateway-release"
+          deploy_repo="$RUNNER_TEMP/discord-gateway-deploy"
+          remote="ssh://${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PORT}/opt/git/pccbot-discord-gateway.git"
+
+          node apps/discord-gateway/server/gateway-release.mjs verify "$release"
+          git clone --branch main --single-branch "$remote" "$deploy_repo"
+
+          current_source="$(node --input-type=module --eval '
+            import { readFileSync } from "node:fs";
+            try {
+              const release = JSON.parse(readFileSync(process.argv[1], "utf8"));
+              process.stdout.write(release.sourceSha ?? "");
+            } catch {
+              process.stdout.write("");
+            }
+          ' "$deploy_repo/release.json")"
+
+          if [ "$current_source" = "$GITHUB_SHA" ]; then
+            expected="$(git -C "$deploy_repo" rev-parse HEAD)"
+            actual="$(git ls-remote "$remote" refs/deployed/main | awk '{print $1}')"
+            if [ "$actual" = "$expected" ]; then
+              echo "Gateway source $GITHUB_SHA is already active."
+              exit 0
+            fi
+            echo "Gateway source $GITHUB_SHA is not active; creating a new deployment attempt."
+          fi
+
+          find "$deploy_repo" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            ! -name .git \
+            -exec rm -rf -- {} +
+          cp -R "$release/." "$deploy_repo/"
+          git -C "$deploy_repo" add --all
+          git -C "$deploy_repo" config user.name github-actions[bot]
+          git -C "$deploy_repo" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C "$deploy_repo" commit \
+            -m "deploy: gateway $GITHUB_SHA (run $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT)"
+
+          git -C "$GITHUB_WORKSPACE" fetch --quiet origin main
+          latest_main="$(git -C "$GITHUB_WORKSPACE" rev-parse origin/main)"
+          if [ "$latest_main" != "$GITHUB_SHA" ]; then
+            echo "::notice::Skipping stale Gateway run for $GITHUB_SHA; main is $latest_main."
+            exit 0
+          fi
+
+          expected="$(git -C "$deploy_repo" rev-parse HEAD)"
+          git -C "$deploy_repo" push origin HEAD:refs/heads/main
+
+          for attempt in {1..20}; do
+            actual="$(git ls-remote "$remote" refs/deployed/main | awk '{print $1}')"
+            if [ "$actual" = "$expected" ]; then
+              echo "Gateway deploy $expected is active."
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "::error::Gateway activation failed or rolled back."
+          exit 1

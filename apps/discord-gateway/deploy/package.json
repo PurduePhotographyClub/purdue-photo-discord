@@ -1,0 +1,17 @@
+{
+  "name": "pccbot-discord-gateway-server",
+  "version": "1.0.0",
+  "description": "Immutable production package for the PPC Discord Gateway.",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node --enable-source-maps dist/index.js"
+  },
+  "dependencies": {
+    "discord.js": "14.27.0"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}

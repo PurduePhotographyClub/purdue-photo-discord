@@ -2,127 +2,63 @@
 set -euo pipefail
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-DEPLOY_DIR="${1:-$ROOT_DIR/deploy/discord-gateway}"
-GATEWAY_DIR="$ROOT_DIR/apps/discord-gateway"
+DEFAULT_DEPLOY_DIR="$ROOT_DIR/deploy/discord-gateway"
+DEPLOY_DIR="${1:-$DEFAULT_DEPLOY_DIR}"
+DEPLOY_PARENT="$(dirname -- "$DEPLOY_DIR")"
 
-if [ -z "$DEPLOY_DIR" ] || [ "$DEPLOY_DIR" = "/" ]; then
+if [ -z "$DEPLOY_DIR" ] || [ "$DEPLOY_DIR" = "/" ] || [ "$DEPLOY_DIR" = "$ROOT_DIR" ]; then
   echo "Refusing to use an unsafe deploy directory: $DEPLOY_DIR" >&2
   exit 1
 fi
 
-rm -rf "$GATEWAY_DIR/dist"
+if [ -L "$DEPLOY_DIR" ]; then
+  echo "Refusing to replace a symbolic-link deploy directory: $DEPLOY_DIR" >&2
+  exit 1
+fi
+
+if [ -e "$DEPLOY_DIR" ]; then
+  if [ -L "$DEPLOY_DIR/.git" ] || [ ! -d "$DEPLOY_DIR/.git" ]; then
+    echo "Refusing to replace an existing unmarked deploy directory: $DEPLOY_DIR" >&2
+    exit 1
+  fi
+
+  RESOLVED_DEPLOY_DIR="$(CDPATH='' cd -- "$DEPLOY_DIR" && pwd -P)"
+  RESOLVED_DEFAULT_PARENT="$(CDPATH='' cd -- "$(dirname -- "$DEFAULT_DEPLOY_DIR")" && pwd -P)"
+  RESOLVED_DEFAULT_DIR="$RESOLVED_DEFAULT_PARENT/$(basename -- "$DEFAULT_DEPLOY_DIR")"
+  RESOLVED_GIT_DIR="$(git -C "$DEPLOY_DIR" rev-parse --absolute-git-dir)"
+  if [ "$RESOLVED_DEPLOY_DIR" != "$RESOLVED_DEFAULT_DIR" ] || \
+    [ "$RESOLVED_GIT_DIR" != "$RESOLVED_DEPLOY_DIR/.git" ]; then
+    echo "Refusing to replace an unrecognized deploy repository: $DEPLOY_DIR" >&2
+    exit 1
+  fi
+fi
+
+mkdir -p "$DEPLOY_PARENT"
+STAGING_ROOT="$(mktemp -d "$DEPLOY_PARENT/.gateway-release.XXXXXX")"
+STAGING_RELEASE="$STAGING_ROOT/release"
+
+cleanup() {
+  rm -rf "$STAGING_ROOT"
+}
+trap cleanup EXIT
+
 npm run build:gateway
 
-mkdir -p "$DEPLOY_DIR"
+GITHUB_REPOSITORY="PurduePhotographyClub/purdue-photo-discord" \
+GITHUB_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)" \
+GITHUB_RUN_ID=1 \
+GITHUB_RUN_ATTEMPT=1 \
+  node "$ROOT_DIR/apps/discord-gateway/server/gateway-release.mjs" \
+    package \
+    "$STAGING_RELEASE"
 
 if [ -d "$DEPLOY_DIR/.git" ]; then
   find "$DEPLOY_DIR" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+  cp -R "$STAGING_RELEASE/." "$DEPLOY_DIR/"
 else
-  rm -rf "$DEPLOY_DIR"
-  mkdir -p "$DEPLOY_DIR"
+  mv "$STAGING_RELEASE" "$DEPLOY_DIR"
   git -C "$DEPLOY_DIR" init -b main
 fi
 
-mkdir -p "$DEPLOY_DIR/dist" "$DEPLOY_DIR/server" "$DEPLOY_DIR/systemd"
-
-cp "$GATEWAY_DIR/systemd/pccbot-discord-gateway.service.example" "$DEPLOY_DIR/systemd/pccbot-discord-gateway.service.example"
-cp -R "$GATEWAY_DIR/dist/." "$DEPLOY_DIR/dist/"
-
-cat > "$DEPLOY_DIR/package.json" <<'JSON'
-{
-  "name": "pccbot-discord-gateway-server",
-  "version": "1.0.0",
-  "description": "Production deploy package for the PPC Discord Gateway forwarder.",
-  "type": "module",
-  "private": true,
-  "main": "dist/index.js",
-  "scripts": {
-    "start": "node --enable-source-maps dist/index.js"
-  },
-  "dependencies": {
-    "discord.js": "^14.27.0"
-  },
-  "engines": {
-    "node": ">=22"
-  }
-}
-JSON
-
-npm install --package-lock-only --omit=dev --ignore-scripts --prefix "$DEPLOY_DIR"
-
-cat > "$DEPLOY_DIR/.gitignore" <<'GITIGNORE'
-node_modules
-*.log
-GITIGNORE
-
-cat > "$DEPLOY_DIR/README.md" <<'MARKDOWN'
-# PPC Discord Gateway Server
-
-This deploy repo contains only the VPS-hosted Discord Gateway process.
-
-It does not contain the Cloudflare Worker app, Worker secrets, Wrangler config, slash-command handlers, or website backend code.
-
-## Start
-
-```sh
-npm install --omit=dev --ignore-scripts
-npm start
-```
-
-For production, use the systemd unit in `systemd/pccbot-discord-gateway.service.example`.
-
-## Runtime Configuration
-
-Runtime secrets and deployment-specific settings are managed by the server operator outside this deploy repository.
-MARKDOWN
-
-cat > "$DEPLOY_DIR/server/post-receive.example" <<'BASH'
-#!/bin/bash
-set -euo pipefail
-
-BRANCH="main"
-GIT_DIR="/opt/git/pccbot-discord-gateway.git"
-WORK_TREE="/opt/pccbot-discord-gateway"
-SERVICE_NAME="pccbot-discord-gateway"
-SERVICE_USER="pccbot"
-
-run_as_service_user() {
-  if [ "$(id -un)" = "$SERVICE_USER" ]; then
-    "$@"
-    return
-  fi
-
-  if [ "$(id -u)" = "0" ]; then
-    sudo -u "$SERVICE_USER" "$@"
-    return
-  fi
-
-  echo "Deploy hook must run as $SERVICE_USER or root, not $(id -un)." >&2
-  exit 1
-}
-
-while read -r _oldrev _newrev refname; do
-  if [ "$refname" != "refs/heads/$BRANCH" ]; then
-    echo "Skipping $refname; deploy hook only tracks refs/heads/$BRANCH."
-    continue
-  fi
-
-  echo "Deploying $SERVICE_NAME from $refname."
-  run_as_service_user git --git-dir="$GIT_DIR" --work-tree="$WORK_TREE" checkout -f "$BRANCH"
-  echo "Checked out $(run_as_service_user git --git-dir="$GIT_DIR" rev-parse --short "$BRANCH")."
-
-  cd "$WORK_TREE"
-  run_as_service_user npm install --omit=dev --ignore-scripts
-
-  sudo -n /bin/systemctl restart "$SERVICE_NAME"
-  echo "Restarted $SERVICE_NAME."
-  sudo -n /bin/systemctl is-active "$SERVICE_NAME"
-done
-BASH
-
-chmod +x "$DEPLOY_DIR/server/post-receive.example"
-
-echo "Prepared Gateway deploy repo at $DEPLOY_DIR"
-echo "Next:"
-echo "  cd $DEPLOY_DIR"
-echo "  git status"
+echo "Prepared a verified Gateway release at $DEPLOY_DIR"
+echo "Production deployment now runs through the GitHub Actions CI workflow."
