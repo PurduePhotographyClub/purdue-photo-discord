@@ -176,19 +176,19 @@ test('lets an authorized moderator reverse automatic actions exactly once', asyn
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const first = await moderator.review({
-    action: 'restore',
+    action: 'dismiss',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
   });
   const duplicate = await moderator.review({
-    action: 'restore',
+    action: 'dismiss',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
   });
 
-  assert.equal(first.status, 'restored');
+  assert.equal(first.status, 'dismissed');
   assert.equal(duplicate.status, 'already_resolved');
   assert.deepEqual(calls, [
     `delete:${MESSAGE_ID}`,
@@ -223,7 +223,7 @@ test('allows only one winner when two moderators resolve the same review concurr
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const request = {
-    action: 'restore' as const,
+    action: 'dismiss' as const,
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
@@ -235,7 +235,7 @@ test('allows only one winner when two moderators resolve the same review concurr
 
   assert.deepEqual(results.map((result) => result.status).sort(), [
     'already_resolved',
-    'restored',
+    'dismissed',
   ]);
   assert.equal(
     calls.filter((call) => call === `remove:${SCAM_ROLE_ID}`).length,
@@ -261,7 +261,7 @@ test('releases a review claim after a transient restoration failure', async () =
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const request = {
-    action: 'restore' as const,
+    action: 'dismiss' as const,
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
@@ -270,7 +270,7 @@ test('releases a review claim after a transient restoration failure', async () =
   const retry = await moderator.review(request);
 
   assert.equal(first.status, 'unavailable');
-  assert.equal(retry.status, 'restored');
+  assert.equal(retry.status, 'dismissed');
   assert.equal(calls.filter((call) => call.startsWith('dm:')).length, 2);
 });
 
@@ -285,13 +285,13 @@ test('restoration does not depend on the already-deleted source message', async 
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const result = await moderator.review({
-    action: 'restore',
+    action: 'dismiss',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
   });
 
-  assert.equal(result.status, 'restored');
+  assert.equal(result.status, 'dismissed');
   assert.equal(calls.includes(`remove:${SCAM_ROLE_ID}`), true);
   assert.equal(calls.includes(`add:${VERIFIED_ROLE_ID}`), true);
 });
@@ -309,7 +309,7 @@ test('attempts Clown removal and RealRaw restoration independently', async () =>
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const result = await moderator.review({
-    action: 'restore',
+    action: 'dismiss',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
@@ -366,7 +366,7 @@ test('rechecks moderator authorization on the Gateway before resolving', async (
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const result = await moderator.review({
-    action: 'restore',
+    action: 'dismiss',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
@@ -388,7 +388,7 @@ test('does not let a review button punish a scam reporter', async () => {
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const forbidden = await moderator.review({
-    action: 'restore',
+    action: 'dismiss',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,

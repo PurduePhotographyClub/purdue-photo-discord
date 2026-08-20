@@ -330,7 +330,7 @@ export function createDiscordScamModerator(
         client,
         config,
         claimableReview,
-        'restore',
+        'dismiss',
         input.actorId,
         outcome.message,
         logger,
@@ -583,7 +583,7 @@ async function restorePendingReview(input: {
   pending: PendingScamReview;
 }): Promise<
   Omit<DiscordScamReviewResult, 'status'> & {
-    status: 'restored' | 'unavailable';
+    status: 'dismissed' | 'unavailable';
   }
 > {
   const { alert } = input.pending;
@@ -681,7 +681,7 @@ async function restorePendingReview(input: {
     ...(alert.verifiedRoleRemoved ? ['RealRaw restored'] : []),
   ];
   const message = `${restoredActions.join('; ')}; user notified that their access was restored.`;
-  return reviewResult(true, 'restored', message);
+  return reviewResult(true, 'dismissed', message);
 }
 
 async function editReviewAlert(

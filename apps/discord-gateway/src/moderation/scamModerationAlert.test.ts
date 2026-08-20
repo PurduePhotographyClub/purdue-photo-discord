@@ -165,8 +165,8 @@ test('truncates long evidence safely and parses only valid review controls', () 
   assert.doesNotMatch(description, /@everyone/u);
   assert.match(description, /…$/u);
 
-  assert.deepEqual(parseScamReviewAction(`scam-review:restore:${MESSAGE_ID}`), {
-    action: 'restore',
+  assert.deepEqual(parseScamReviewAction(`scam-review:dismiss:${MESSAGE_ID}`), {
+    action: 'dismiss',
     reviewId: MESSAGE_ID,
   });
   assert.deepEqual(
@@ -177,10 +177,10 @@ test('truncates long evidence safely and parses only valid review controls', () 
     },
   );
   assert.equal(
-    parseScamReviewAction('scam-review:restore:not-a-snowflake'),
+    parseScamReviewAction('scam-review:dismiss:not-a-snowflake'),
     null,
   );
-  assert.equal(parseScamReviewAction(`other:restore:${MESSAGE_ID}`), null);
+  assert.equal(parseScamReviewAction(`other:dismiss:${MESSAGE_ID}`), null);
 });
 
 test('renders attacker-controlled markdown and links as inert evidence', () => {

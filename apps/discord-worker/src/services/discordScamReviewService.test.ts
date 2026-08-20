@@ -35,13 +35,13 @@ test('an Executive can restore access through the signed Gateway API', async () 
         return Response.json({
           message: 'Clown removed; RealRaw restored; user notified.',
           ok: true,
-          status: 'restored',
+          status: 'dismissed',
         });
       },
     },
     WORKER_SECRET: 'test-secret',
   };
-  const interaction = createInteraction('restore', [
+  const interaction = createInteraction('dismiss', [
     DISCORD_ROLE_IDS.executive,
   ]);
 
@@ -49,7 +49,7 @@ test('an Executive can restore access through the signed Gateway API', async () 
 
   assert.equal(requestUrl, 'http://gateway.internal/scam-review');
   assert.deepEqual(requestBody, {
-    action: 'restore',
+    action: 'dismiss',
     actorId: ACTOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: REVIEW_ID,
@@ -82,12 +82,12 @@ test('rejects nonstaff and wrong-channel scam review controls without calling th
   };
 
   const nonstaff = await handleDiscordScamReviewButton(
-    createInteraction('restore', []),
+    createInteraction('dismiss', []),
     env,
   );
   const wrongChannel = await handleDiscordScamReviewButton(
     {
-      ...createInteraction('restore', [DISCORD_ROLE_IDS.admin]),
+      ...createInteraction('dismiss', [DISCORD_ROLE_IDS.admin]),
       channel_id: '1512507610186907648',
     },
     env,
@@ -108,18 +108,18 @@ test('recognizes only strict scam review IDs and defers their interaction', () =
     true,
   );
   assert.equal(
-    isDiscordScamReviewButtonCustomId('scam-review:restore:not-valid'),
+    isDiscordScamReviewButtonCustomId('scam-review:dismiss:not-valid'),
     false,
   );
   assert.equal(
-    isDiscordScamReviewButtonCustomId(`scam-review:restore:${REVIEW_ID}:extra`),
+    isDiscordScamReviewButtonCustomId(`scam-review:dismiss:${REVIEW_ID}:extra`),
     false,
   );
   assert.equal(shouldDeferDiscordInteraction(interaction), true);
 });
 
 function createInteraction(
-  action: 'restore' | 'reviewed',
+  action: 'confirm' | 'dismiss' | 'reviewed',
   roles: string[],
 ): ComponentInteraction {
   return {

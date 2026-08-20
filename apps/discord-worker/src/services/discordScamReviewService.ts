@@ -11,7 +11,8 @@ import {
   type GatewayScamReviewRequest,
 } from './gatewayApiService';
 
-const CUSTOM_ID_PATTERN = /^scam-review:(restore|reviewed):(\d{17,20})$/u;
+const CUSTOM_ID_PATTERN =
+  /^scam-review:(confirm|dismiss|reviewed):(\d{17,20})$/u;
 
 export function isDiscordScamReviewButtonCustomId(customId: string) {
   return CUSTOM_ID_PATTERN.test(customId);

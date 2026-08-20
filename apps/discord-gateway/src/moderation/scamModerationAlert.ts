@@ -7,7 +7,7 @@ import {
 } from 'discord.js';
 import type { ScamModerationAlert } from './scamModerationService.js';
 
-export type ScamReviewAction = 'restore' | 'reviewed';
+export type ScamReviewAction = 'dismiss' | 'reviewed';
 
 export interface ScamReviewResolution {
   action: ScamReviewAction;
@@ -75,7 +75,7 @@ export function parseScamReviewAction(
   customId: string,
 ): { action: ScamReviewAction; reviewId: string } | null {
   const match = new RegExp(
-    `^${REVIEW_CUSTOM_ID_PREFIX}:(restore|reviewed):(\\d{17,20})$`,
+    `^${REVIEW_CUSTOM_ID_PREFIX}:(dismiss|reviewed):(\\d{17,20})$`,
     'u',
   ).exec(customId);
 
@@ -122,7 +122,7 @@ function buildReviewComponents(
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`${REVIEW_CUSTOM_ID_PREFIX}:restore:${alert.messageId}`)
+        .setCustomId(`${REVIEW_CUSTOM_ID_PREFIX}:dismiss:${alert.messageId}`)
         .setLabel('Remove actions')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
@@ -137,7 +137,7 @@ function getAlertColor(
   alert: ScamModerationAlert,
   resolution: ScamReviewResolution | undefined,
 ) {
-  if (resolution?.action === 'restore') {
+  if (resolution?.action === 'dismiss') {
     return Colors.Green;
   }
   if (resolution) {
@@ -150,7 +150,7 @@ function getAlertTitle(
   alert: ScamModerationAlert,
   resolution: ScamReviewResolution | undefined,
 ) {
-  if (resolution?.action === 'restore') {
+  if (resolution?.action === 'dismiss') {
     return 'Scam actions removed';
   }
   if (resolution?.action === 'reviewed') {

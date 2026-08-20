@@ -42,7 +42,7 @@ export function isScamReviewActionAllowed(
   if (alert.reviewReason === 'reported_scam' || alert.protectedMember) {
     return action === 'reviewed';
   }
-  if (action === 'restore') {
+  if (action === 'dismiss') {
     return alert.restrictedRoleAdded || alert.verifiedRoleRemoved;
   }
   return action === 'reviewed';
