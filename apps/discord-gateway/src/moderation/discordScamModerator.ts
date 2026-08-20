@@ -55,7 +55,8 @@ export interface DiscordScamModerator {
 }
 
 const ROLE_SAFETY_CACHE_MS = 5 * 60 * 1_000;
-const PUBLIC_ANNOUNCEMENT_COPY = '🚨 Likely scam removed. Nice try. 🤡';
+const RESTORED_ACCESS_COPY =
+  'A moderator reviewed the message flagged by the scam detector. Your server access has been restored.';
 
 export function createDiscordScamModerator(
   config: GatewayScamModerationConfig,
@@ -261,12 +262,12 @@ export function createDiscordScamModerator(
         'processing',
       );
 
-      if (input.action === 'dismiss' || input.action === 'reviewed') {
-        const status = input.action === 'dismiss' ? 'dismissed' : 'reviewed';
+      if (input.action === 'reviewed') {
+        const status = 'reviewed';
         const message =
-          input.action === 'dismiss'
-            ? 'Dismissed. No message or role action was taken.'
-            : 'Marked reviewed. No action was taken against the reporter.';
+          claimableReview.alert.reviewReason === 'reported_scam'
+            ? 'Marked reviewed. No action was taken against the reporter.'
+            : 'Marked reviewed. Automatic moderation actions remain in place.';
         pendingReviews = updatePendingReviewState(
           pendingReviews,
           input.reviewId,
@@ -284,10 +285,9 @@ export function createDiscordScamModerator(
         return reviewResult(true, status, message);
       }
 
-      let outcome: Awaited<ReturnType<typeof confirmPendingReview>>;
+      let outcome: Awaited<ReturnType<typeof restorePendingReview>>;
       try {
-        outcome = await confirmPendingReview({
-          client,
+        outcome = await restorePendingReview({
           config,
           guild,
           logger,
@@ -313,6 +313,14 @@ export function createDiscordScamModerator(
           'Discord could not complete that review. Try again in a moment.',
         );
       }
+      if (outcome.status === 'unavailable') {
+        pendingReviews = updatePendingReviewState(
+          pendingReviews,
+          input.reviewId,
+          'pending',
+        );
+        return outcome;
+      }
       pendingReviews = updatePendingReviewState(
         pendingReviews,
         input.reviewId,
@@ -322,7 +330,7 @@ export function createDiscordScamModerator(
         client,
         config,
         claimableReview,
-        outcome.status === 'confirmed' ? 'confirm' : 'stale',
+        'restore',
         input.actorId,
         outcome.message,
         logger,
@@ -521,7 +529,7 @@ function createModerationActions(input: {
         const sentAlert = await alertChannel.send(
           buildScamModerationAlertPayload(alert),
         );
-        if (alert.reviewOnly) {
+        if (alert.requiresReview) {
           input.registerPendingReview(alert, sentAlert.id);
         }
       } catch (error) {
@@ -568,132 +576,56 @@ async function assertModerationConfigurationSafe(
   }
 }
 
-async function confirmPendingReview(input: {
-  client: Client;
+async function restorePendingReview(input: {
   config: GatewayScamModerationConfig;
   guild: Guild;
   logger: Logger;
   pending: PendingScamReview;
 }): Promise<
   Omit<DiscordScamReviewResult, 'status'> & {
-    status: 'confirmed' | 'message_changed';
+    status: 'restored' | 'unavailable';
   }
 > {
   const { alert } = input.pending;
-  const sourceChannel = await input.client.channels.fetch(alert.channelId);
-  if (!sourceChannel?.isTextBased()) {
-    return reviewResult(
-      false,
-      'message_changed',
-      'The original channel is unavailable. No action was taken.',
-    );
-  }
-
-  const sourceMessage = await sourceChannel.messages
-    .fetch(alert.messageId)
-    .catch(() => null);
-  if (!sourceMessage || sourceMessage.author.id !== alert.userId) {
-    return reviewResult(
-      false,
-      'message_changed',
-      'The original message is gone or no longer matches this review. No role action was taken.',
-    );
-  }
-
-  if (sourceMessage.content !== alert.content) {
-    return reviewResult(
-      false,
-      'message_changed',
-      'The message changed after this review was created. No action was taken.',
-    );
-  }
-
-  const currentAnalysis = analyzeScamMessage({
-    accountCreatedTimestamp: sourceMessage.author.createdTimestamp,
-    content: sourceMessage.content,
-    joinedTimestamp: sourceMessage.member?.joinedTimestamp ?? null,
-    mentionsEveryone: sourceMessage.mentions.everyone,
-    observedAtTimestamp: Date.now(),
-  });
-  if (!currentAnalysis.isLikelyScam && !currentAnalysis.requiresReview) {
-    return reviewResult(
-      false,
-      'message_changed',
-      'The message changed and no longer matches the scam detector. No action was taken.',
-    );
-  }
-
   const sourceMember = await input.guild.members
     .fetch(alert.userId)
     .catch(() => null);
-  if (!sourceMember || isProtectedScamMember(sourceMember, input.config)) {
+  if (!sourceMember) {
     return reviewResult(
       false,
-      'message_changed',
-      'The member is unavailable or protected. No action was taken.',
-    );
-  }
-
-  try {
-    await sourceMessage.delete();
-  } catch (error) {
-    input.logger.warn('Could not delete a moderator-confirmed scam message.', {
-      channelId: alert.channelId,
-      error,
-      messageId: alert.messageId,
-    });
-    return reviewResult(
-      false,
-      'message_changed',
-      'Discord could not delete the original message. No role action was taken.',
+      'unavailable',
+      'The member is unavailable, so their access could not be restored yet.',
     );
   }
 
   let failedActions: string[] = [];
-  let roleConfigurationSafe = true;
   try {
     await assertModerationConfigurationSafe(input.guild, input.config);
   } catch (error) {
-    roleConfigurationSafe = false;
-    failedActions = [...failedActions, 'role safety check'];
-    input.logger.warn('Could not validate roles for a confirmed scam.', {
-      error,
-      guildId: alert.guildId,
-      userId: alert.userId,
-    });
-  }
-
-  if (
-    roleConfigurationSafe &&
-    !sourceMember.roles.cache.has(input.config.restrictedRoleId)
-  ) {
-    try {
-      await sourceMember.roles.add(
-        input.config.restrictedRoleId,
-        'Moderator confirmed probable scam',
-      );
-    } catch (error) {
-      failedActions = [...failedActions, 'Clown role'];
-      input.logger.warn('Could not add Clown after a confirmed scam.', {
+    input.logger.warn(
+      'Could not validate roles before restoring scam access.',
+      {
         error,
         guildId: alert.guildId,
         userId: alert.userId,
-      });
-    }
+      },
+    );
+    return reviewResult(
+      false,
+      'unavailable',
+      'Discord could not safely restore the member roles yet. Try again in a moment.',
+    );
   }
 
-  if (
-    roleConfigurationSafe &&
-    sourceMember.roles.cache.has(input.config.verifiedRoleId)
-  ) {
+  if (alert.restrictedRoleAdded) {
     try {
       await sourceMember.roles.remove(
-        input.config.verifiedRoleId,
-        'Moderator confirmed probable scam',
+        input.config.restrictedRoleId,
+        'Moderator reversed automatic scam actions',
       );
     } catch (error) {
-      failedActions = [...failedActions, 'verified role'];
-      input.logger.warn('Could not remove verified after a confirmed scam.', {
+      failedActions = [...failedActions, 'Clown role removal'];
+      input.logger.warn('Could not remove Clown while restoring access.', {
         error,
         guildId: alert.guildId,
         userId: alert.userId,
@@ -701,34 +633,62 @@ async function confirmPendingReview(input: {
     }
   }
 
-  try {
-    if (!sourceChannel.isSendable()) {
-      throw new Error('The source channel is not sendable.');
+  if (alert.verifiedRoleRemoved) {
+    try {
+      await sourceMember.roles.add(
+        input.config.verifiedRoleId,
+        'Moderator reversed automatic scam actions',
+      );
+    } catch (error) {
+      failedActions = [...failedActions, 'RealRaw restoration'];
+      input.logger.warn('Could not restore RealRaw after scam review.', {
+        error,
+        guildId: alert.guildId,
+        userId: alert.userId,
+      });
     }
-    await sourceChannel.send({
-      allowedMentions: { parse: [] },
-      content: PUBLIC_ANNOUNCEMENT_COPY,
-    });
-  } catch (error) {
-    failedActions = [...failedActions, 'channel notice'];
-    input.logger.warn('Could not announce a moderator-confirmed scam.', {
-      channelId: alert.channelId,
-      error,
-      messageId: alert.messageId,
-    });
   }
 
-  const message = failedActions.length
-    ? `Message deleted. Follow up on: ${failedActions.join(', ')}.`
-    : 'Message deleted; verified removed when present; Clown added.';
-  return reviewResult(true, 'confirmed', message);
+  if (failedActions.length === 0) {
+    try {
+      await sourceMember.send({
+        allowedMentions: { parse: [] },
+        content: RESTORED_ACCESS_COPY,
+      });
+    } catch (error) {
+      failedActions = [...failedActions, 'user notification'];
+      input.logger.warn(
+        'Could not notify the member that access was restored.',
+        {
+          error,
+          guildId: alert.guildId,
+          userId: alert.userId,
+        },
+      );
+    }
+  }
+
+  if (failedActions.length > 0) {
+    return reviewResult(
+      false,
+      'unavailable',
+      `Access restoration is incomplete. Try again; pending: ${failedActions.join(', ')}.`,
+    );
+  }
+
+  const restoredActions = [
+    ...(alert.restrictedRoleAdded ? ['Clown removed'] : []),
+    ...(alert.verifiedRoleRemoved ? ['RealRaw restored'] : []),
+  ];
+  const message = `${restoredActions.join('; ')}; user notified that their access was restored.`;
+  return reviewResult(true, 'restored', message);
 }
 
 async function editReviewAlert(
   client: Client,
   config: GatewayScamModerationConfig,
   pending: PendingScamReview,
-  action: ScamReviewAction | 'stale',
+  action: ScamReviewAction,
   actorId: string,
   result: string,
   logger: Logger,

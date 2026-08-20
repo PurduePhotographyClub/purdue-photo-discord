@@ -13,22 +13,15 @@ export interface DiscordScamReviewResult {
   ok: boolean;
   status:
     | 'already_resolved'
-    | 'confirmed'
-    | 'dismissed'
     | 'expired'
     | 'forbidden'
-    | 'message_changed'
+    | 'restored'
     | 'reviewed'
     | 'unavailable';
 }
 
 export type PendingReviewState =
-  | 'confirmed'
-  | 'dismissed'
-  | 'message_changed'
-  | 'pending'
-  | 'processing'
-  | 'reviewed';
+  'pending' | 'processing' | 'restored' | 'reviewed';
 
 export interface PendingScamReview {
   alert: ScamModerationAlert;

@@ -57,11 +57,7 @@ export function parseScamReviewRequest(
   if (!isRecord(value)) {
     throw new ScamReviewRequestError('Scam review must be an object.', 400);
   }
-  if (
-    value.action !== 'confirm' &&
-    value.action !== 'dismiss' &&
-    value.action !== 'reviewed'
-  ) {
+  if (value.action !== 'restore' && value.action !== 'reviewed') {
     throw new ScamReviewRequestError('Scam review action is invalid.', 400);
   }
   const actorId = value.actorId;

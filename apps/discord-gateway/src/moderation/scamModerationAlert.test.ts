@@ -21,8 +21,9 @@ test('builds a complete evidence embed for a probable scam', () => {
     guildId: GUILD_ID,
     messageId: MESSAGE_ID,
     protectedMember: false,
-    reviewOnly: false,
+    requiresReview: false,
     reviewReason: 'suspicious_offer',
+    restrictedRoleAdded: true,
     score: 20,
     signalIds: [
       'direct_contact',
@@ -31,6 +32,7 @@ test('builds a complete evidence embed for a probable scam', () => {
       'camera_giveaway_fingerprint',
     ],
     userId: USER_ID,
+    verifiedRoleRemoved: true,
   });
 
   assert.deepEqual(payload.allowedMentions, { parse: [] });
@@ -62,7 +64,7 @@ test('builds a complete evidence embed for a probable scam', () => {
   );
 });
 
-test('adds Confirm scam and Dismiss controls to an actionable review', () => {
+test('shows completed actions and offers reversal controls for a possible scam', () => {
   const payload = buildScamModerationAlertPayload({
     channelId: CHANNEL_ID,
     content: 'Selling two concert tickets. Message me if interested.',
@@ -71,16 +73,22 @@ test('adds Confirm scam and Dismiss controls to an actionable review', () => {
     guildId: GUILD_ID,
     messageId: MESSAGE_ID,
     protectedMember: false,
-    reviewOnly: true,
+    requiresReview: true,
     reviewReason: 'suspicious_offer',
+    restrictedRoleAdded: true,
     score: 10,
     signalIds: ['direct_contact', 'ticket_offer'],
     userId: USER_ID,
+    verifiedRoleRemoved: true,
   });
 
   const embed = payload.embeds[0]?.toJSON();
-  assert.equal(embed?.title, 'Possible scam needs review');
-  assertField(embed?.fields, 'Result', 'No action taken yet.');
+  assert.equal(embed?.title, 'Possible scam removed');
+  assertField(
+    embed?.fields,
+    'Result',
+    'Message deleted; verified removed when present; Clown added.',
+  );
 
   const rows = payload.components.map((row) => row.toJSON());
   const buttons = (rows[0]?.components ?? []) as Array<{
@@ -91,11 +99,11 @@ test('adds Confirm scam and Dismiss controls to an actionable review', () => {
   assert.equal(buttons.length, 2);
   assert.deepEqual(
     buttons.map((button) => button.label),
-    ['Confirm scam', 'Dismiss'],
+    ['Remove actions', 'Keep actions'],
   );
   assert.deepEqual(
     buttons.map((button) => button.style),
-    [ButtonStyle.Danger, ButtonStyle.Secondary],
+    [ButtonStyle.Success, ButtonStyle.Secondary],
   );
   for (const button of buttons) {
     assert.ok((button.custom_id?.length ?? 101) <= 100);
@@ -111,11 +119,13 @@ test('does not offer a destructive action against someone reporting a scam', () 
     guildId: GUILD_ID,
     messageId: MESSAGE_ID,
     protectedMember: false,
-    reviewOnly: true,
+    requiresReview: true,
     reviewReason: 'reported_scam',
+    restrictedRoleAdded: false,
     score: 18,
     signalIds: ['giveaway_lure', 'high_value_item'],
     userId: USER_ID,
+    verifiedRoleRemoved: false,
   });
 
   const buttons = (payload.components[0]?.toJSON().components ?? []) as Array<{
@@ -126,7 +136,7 @@ test('does not offer a destructive action against someone reporting a scam', () 
     ['Mark reviewed'],
   );
   assert.equal(
-    buttons.some((button) => button.label === 'Confirm scam'),
+    buttons.some((button) => button.label === 'Remove actions'),
     false,
   );
 });
@@ -140,11 +150,13 @@ test('truncates long evidence safely and parses only valid review controls', () 
     guildId: GUILD_ID,
     messageId: MESSAGE_ID,
     protectedMember: false,
-    reviewOnly: true,
+    requiresReview: true,
     reviewReason: 'suspicious_offer',
+    restrictedRoleAdded: true,
     score: 11,
     signalIds: ['giveaway_lure'],
     userId: USER_ID,
+    verifiedRoleRemoved: true,
   });
 
   const description = payload.embeds[0]?.toJSON().description ?? '';
@@ -153,19 +165,22 @@ test('truncates long evidence safely and parses only valid review controls', () 
   assert.doesNotMatch(description, /@everyone/u);
   assert.match(description, /…$/u);
 
-  assert.deepEqual(parseScamReviewAction(`scam-review:confirm:${MESSAGE_ID}`), {
-    action: 'confirm',
+  assert.deepEqual(parseScamReviewAction(`scam-review:restore:${MESSAGE_ID}`), {
+    action: 'restore',
     reviewId: MESSAGE_ID,
   });
-  assert.deepEqual(parseScamReviewAction(`scam-review:dismiss:${MESSAGE_ID}`), {
-    action: 'dismiss',
-    reviewId: MESSAGE_ID,
-  });
+  assert.deepEqual(
+    parseScamReviewAction(`scam-review:reviewed:${MESSAGE_ID}`),
+    {
+      action: 'reviewed',
+      reviewId: MESSAGE_ID,
+    },
+  );
   assert.equal(
-    parseScamReviewAction('scam-review:confirm:not-a-snowflake'),
+    parseScamReviewAction('scam-review:restore:not-a-snowflake'),
     null,
   );
-  assert.equal(parseScamReviewAction(`other:confirm:${MESSAGE_ID}`), null);
+  assert.equal(parseScamReviewAction(`other:restore:${MESSAGE_ID}`), null);
 });
 
 test('renders attacker-controlled markdown and links as inert evidence', () => {
@@ -178,11 +193,13 @@ test('renders attacker-controlled markdown and links as inert evidence', () => {
     guildId: GUILD_ID,
     messageId: MESSAGE_ID,
     protectedMember: false,
-    reviewOnly: true,
+    requiresReview: true,
     reviewReason: 'suspicious_offer',
+    restrictedRoleAdded: true,
     score: 10,
     signalIds: ['giveaway_lure'],
     userId: USER_ID,
+    verifiedRoleRemoved: true,
   });
 
   const description = payload.embeds[0]?.toJSON().description ?? '';

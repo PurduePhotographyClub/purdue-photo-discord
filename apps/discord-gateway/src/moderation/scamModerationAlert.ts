@@ -7,10 +7,10 @@ import {
 } from 'discord.js';
 import type { ScamModerationAlert } from './scamModerationService.js';
 
-export type ScamReviewAction = 'confirm' | 'dismiss' | 'reviewed';
+export type ScamReviewAction = 'restore' | 'reviewed';
 
 export interface ScamReviewResolution {
-  action: ScamReviewAction | 'stale';
+  action: ScamReviewAction;
   moderatorId: string;
   result: string;
 }
@@ -75,7 +75,7 @@ export function parseScamReviewAction(
   customId: string,
 ): { action: ScamReviewAction; reviewId: string } | null {
   const match = new RegExp(
-    `^${REVIEW_CUSTOM_ID_PREFIX}:(confirm|dismiss|reviewed):(\\d{17,20})$`,
+    `^${REVIEW_CUSTOM_ID_PREFIX}:(restore|reviewed):(\\d{17,20})$`,
     'u',
   ).exec(customId);
 
@@ -93,7 +93,7 @@ function buildReviewComponents(
   alert: ScamModerationAlert,
   resolution: ScamReviewResolution | undefined,
 ) {
-  if (!alert.reviewOnly || resolution) {
+  if (!alert.requiresReview || resolution) {
     return [];
   }
 
@@ -108,15 +108,26 @@ function buildReviewComponents(
     ];
   }
 
+  if (!alert.restrictedRoleAdded && !alert.verifiedRoleRemoved) {
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${REVIEW_CUSTOM_ID_PREFIX}:reviewed:${alert.messageId}`)
+          .setLabel('Mark reviewed')
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ];
+  }
+
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`${REVIEW_CUSTOM_ID_PREFIX}:confirm:${alert.messageId}`)
-        .setLabel('Confirm scam')
-        .setStyle(ButtonStyle.Danger),
+        .setCustomId(`${REVIEW_CUSTOM_ID_PREFIX}:restore:${alert.messageId}`)
+        .setLabel('Remove actions')
+        .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`${REVIEW_CUSTOM_ID_PREFIX}:dismiss:${alert.messageId}`)
-        .setLabel('Dismiss')
+        .setCustomId(`${REVIEW_CUSTOM_ID_PREFIX}:reviewed:${alert.messageId}`)
+        .setLabel('Keep actions')
         .setStyle(ButtonStyle.Secondary),
     ),
   ];
@@ -126,33 +137,31 @@ function getAlertColor(
   alert: ScamModerationAlert,
   resolution: ScamReviewResolution | undefined,
 ) {
-  if (resolution?.action === 'confirm') {
-    return Colors.Red;
+  if (resolution?.action === 'restore') {
+    return Colors.Green;
   }
   if (resolution) {
     return Colors.Greyple;
   }
-  return alert.reviewOnly ? Colors.Orange : Colors.Red;
+  return alert.requiresReview ? Colors.Orange : Colors.Red;
 }
 
 function getAlertTitle(
   alert: ScamModerationAlert,
   resolution: ScamReviewResolution | undefined,
 ) {
-  if (resolution?.action === 'confirm') {
-    return 'Scam confirmed by moderator';
-  }
-  if (resolution?.action === 'dismiss') {
-    return 'Scam review dismissed';
+  if (resolution?.action === 'restore') {
+    return 'Scam actions removed';
   }
   if (resolution?.action === 'reviewed') {
-    return 'Scam report reviewed';
+    return alert.reviewReason === 'reported_scam'
+      ? 'Scam report reviewed'
+      : 'Automatic scam actions kept';
   }
-  if (resolution?.action === 'stale') {
-    return 'Scam review could not be applied';
-  }
-  if (alert.reviewOnly) {
-    return 'Possible scam needs review';
+  if (alert.requiresReview) {
+    return alert.reviewReason === 'reported_scam'
+      ? 'Scam report awaiting review'
+      : 'Possible scam removed';
   }
   return alert.signalIds.includes('ticket_template_fingerprint')
     ? 'Probable ticket scam detected'
@@ -166,10 +175,8 @@ function getAlertResult(
   if (resolution) {
     return `${resolution.result} Resolved by <@${resolution.moderatorId}> (\`${resolution.moderatorId}\`).`;
   }
-  if (alert.reviewOnly) {
-    return alert.reviewReason === 'reported_scam'
-      ? 'Reported scam pattern; no action was taken against the reporter.'
-      : 'No action taken yet.';
+  if (alert.requiresReview && alert.reviewReason === 'reported_scam') {
+    return 'Reported scam pattern; no action was taken against the reporter.';
   }
   if (alert.protectedMember && alert.failedActions.includes('delete_message')) {
     return 'Deletion failed; protected member roles unchanged; manual follow-up required.';
