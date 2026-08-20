@@ -36,6 +36,10 @@ import {
 } from '../services/discordStudioScheduleService';
 import { isDiscordScamReviewButtonCustomId } from '../services/discordScamReviewService';
 import {
+  isEventCarpoolModalCustomId,
+  shouldDeferEventCarpoolButton,
+} from '../services/discordEventCarpoolService';
+import {
   InteractionResponseFlags,
   InteractionResponseType,
   InteractionType,
@@ -91,7 +95,8 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
       interaction.data.name === 'equipment-terms-message' ||
       interaction.data.name === 'jobs-101-message' ||
       interaction.data.name === 'post-report-message' ||
-      interaction.data.name === 'clear-reports'
+      interaction.data.name === 'clear-reports' ||
+      interaction.data.name === 'event-carpools-setup'
     );
   }
 
@@ -105,7 +110,8 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
       isStudioModalCustomId(interaction.data.custom_id) ||
       isFilmRequestReviewModalCustomId(interaction.data.custom_id) ||
       isMemberReportModalCustomId(interaction.data.custom_id) ||
-      isMemberReportCorrectionModalCustomId(interaction.data.custom_id)
+      isMemberReportCorrectionModalCustomId(interaction.data.custom_id) ||
+      isEventCarpoolModalCustomId(interaction.data.custom_id)
     );
   }
 
@@ -127,7 +133,8 @@ export function shouldDeferDiscordInteraction(interaction: DiscordInteraction) {
     isJobsAccessButtonCustomId(customId) ||
     isEquipmentLoanActionButtonCustomId(customId) ||
     isDiscordScamReviewButtonCustomId(customId) ||
-    isStudioDirectCancelButtonCustomId(customId)
+    isStudioDirectCancelButtonCustomId(customId) ||
+    shouldDeferEventCarpoolButton(customId)
   );
 }
 

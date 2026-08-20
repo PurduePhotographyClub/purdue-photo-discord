@@ -56,6 +56,10 @@ import {
   handleDiscordScamReviewButton,
   isDiscordScamReviewButtonCustomId,
 } from '../services/discordScamReviewService';
+import {
+  handleEventCarpoolButton,
+  isEventCarpoolButtonCustomId,
+} from '../services/discordEventCarpoolService';
 
 export async function handleButtonInteraction(
   interaction: ComponentInteraction,
@@ -115,6 +119,10 @@ export async function handleButtonInteraction(
 
   if (isDiscordScamReviewButtonCustomId(interaction.data.custom_id)) {
     return handleDiscordScamReviewButton(interaction, env);
+  }
+
+  if (isEventCarpoolButtonCustomId(interaction.data.custom_id)) {
+    return handleEventCarpoolButton(interaction, env);
   }
 
   // Return a valid interaction response instead of letting unknown buttons time

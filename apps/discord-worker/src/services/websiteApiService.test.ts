@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { claimGatewayRequestNonce } from './websiteApiService';
+import {
+  claimGatewayRequestNonce,
+  requestWebsiteApi,
+} from './websiteApiService';
 import type { Env } from '../discord/types';
 
 function createEnv(response: Response, requests: Request[]): Env {
@@ -50,4 +53,19 @@ test('reports a replayed gateway nonce without converting it into an API outage'
   );
 
   assert.equal(replayed, false);
+});
+
+test('scopes authenticated API requests to a validated Discord actor', async () => {
+  const requests: Request[] = [];
+  const actorDiscordId = '123456789012345678';
+  await requestWebsiteApi(
+    createEnv(Response.json({ ok: true }), requests),
+    '/event-carpools/by-discord',
+    { body: { actorDiscordId }, method: 'POST' },
+  );
+
+  assert.equal(
+    requests[0]?.headers.get('x-pcc-actor-discord-id'),
+    actorDiscordId,
+  );
 });

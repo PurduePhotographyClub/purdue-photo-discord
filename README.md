@@ -59,7 +59,7 @@ sequenceDiagram
 
 | Area            | Examples                                                                                                               |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Slash commands  | Health, wiki, status, admin tools, key redemption, studio/darkroom helpers                                             |
+| Slash commands  | Health, wiki, status, admin tools, key redemption, studio/darkroom helpers, and event carpools                         |
 | Dashboard sync  | Website reports, studio requests, film request review, equipment workflows                                             |
 | Verification    | Discord server membership, account-age policy, website verification support                                            |
 | Gateway events  | Reaction/message/member forwarding when enabled for a deployment                                                       |
@@ -113,6 +113,13 @@ packages/
 ```
 
 ## Deployment Notes
+
+Event carpools use a bot-managed Discord forum named `event-carpools`. After
+registering the latest commands, an Executive or Discord Admin runs
+`/event-carpools-setup` once to create or repair the forum and its tags. Members
+then use `/event-carpools` or the forum's start button to create one post per
+trip. These carpools are community-organized and are not official PPC
+activities.
 
 The Worker and Gateway are deployed separately so the always-on Gateway can stay small and isolated. CI builds both from the same verified `main` commit. After a pull request merges, GitHub deploys the Worker and sends an immutable Gateway release through a restricted non-root SSH identity.
 

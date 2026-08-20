@@ -37,6 +37,7 @@ import { sendDiscordVerificationWelcomeMessage } from '../services/discordVerifi
 import { handleGatewayEvent } from '../services/gatewayEventService';
 import { sweepExpiredPhotographerRequests } from '../services/photographerRequestStatusService';
 import { syncMemberReportProjection } from '../services/discordMemberReportService';
+import { expireDiscordEventCarpool } from '../services/discordEventCarpoolService';
 import type { Env } from '../discord/types';
 import { createLogger } from '../utils/logger';
 import { PHOTOGRAPHER_REQUEST_CHANNEL_IDS } from '../config/discord-channel-ids';
@@ -80,6 +81,8 @@ export async function dispatchInternalEvent(
       return handleFilmRequestReviewEvent(parsedEvent.event, env);
     case 'photographerRequestExpirySweep':
       return handlePhotographerRequestExpirySweepEvent(parsedEvent.event, env);
+    case 'eventCarpoolExpiry':
+      return handleEventCarpoolExpiryEvent(parsedEvent.event, env);
     case 'memberReport':
       return handleMemberReportEvent(parsedEvent.event, env);
     case 'memberRoles':
@@ -231,6 +234,14 @@ async function handlePhotographerRequestExpirySweepEvent(
     ok: true,
     type: event.type,
   };
+}
+
+async function handleEventCarpoolExpiryEvent(
+  event: Extract<ParsedInternalEvent, { kind: 'eventCarpoolExpiry' }>['event'],
+  env: Env,
+): Promise<Record<string, unknown>> {
+  const result = await expireDiscordEventCarpool(env, event);
+  return { ...result, ok: true, type: event.type };
 }
 
 async function handleEquipmentLoanEvent(
