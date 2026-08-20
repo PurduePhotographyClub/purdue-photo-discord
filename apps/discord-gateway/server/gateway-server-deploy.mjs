@@ -7,7 +7,6 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  readFile,
   readlink,
   rename,
   rm,
@@ -364,6 +363,19 @@ function safeMessage(error) {
   return error instanceof Error ? error.message : 'unknown deployment failure';
 }
 
+async function readStandardInput(maxBytes = 4096) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  for await (const chunk of process.stdin) {
+    const nextInput = `${input}${chunk}`;
+    if (Buffer.byteLength(nextInput, 'utf8') > maxBytes) {
+      throw new Error('Gateway deployment ref update is too large.');
+    }
+    input = nextInput;
+  }
+  return input;
+}
+
 async function runCli() {
   const mode = process.argv[2];
   if (!['pre-receive', 'post-receive'].includes(mode)) {
@@ -371,7 +383,7 @@ async function runCli() {
       'Usage: gateway-server-deploy.mjs pre-receive|post-receive',
     );
   }
-  const input = await readFile(0, 'utf8');
+  const input = await readStandardInput();
   if (mode === 'pre-receive') {
     await preReceive(input);
     return;

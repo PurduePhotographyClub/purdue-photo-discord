@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   chmod,
   mkdtemp,
@@ -248,6 +249,35 @@ test('allows only Git transport commands for the dedicated SSH key', async () =>
       /command denied/u,
     );
   }
+});
+
+test('receive-hook CLI reads updates from standard input', () => {
+  const deployScript = path.join(
+    repositoryRoot,
+    'apps/discord-gateway/server/gateway-server-deploy.mjs',
+  );
+  const result = spawnSync(process.execPath, [deployScript, 'pre-receive'], {
+    encoding: 'utf8',
+    input: '',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /requires exactly one ref update/u);
+  assert.doesNotMatch(result.stderr, /ERR_INVALID_ARG_TYPE/u);
+});
+
+test('receive-hook CLI bounds standard input', () => {
+  const deployScript = path.join(
+    repositoryRoot,
+    'apps/discord-gateway/server/gateway-server-deploy.mjs',
+  );
+  const result = spawnSync(process.execPath, [deployScript, 'pre-receive'], {
+    encoding: 'utf8',
+    input: 'x'.repeat(4097),
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /ref update is too large/u);
 });
 
 test('makes a prepared release traversable by the dedicated runtime group', async () => {
