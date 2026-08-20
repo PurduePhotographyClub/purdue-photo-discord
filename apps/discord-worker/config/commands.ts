@@ -7,6 +7,7 @@
 import { adminCommand } from '../src/commands/admin/admin';
 import { clearReportsCommand } from '../src/commands/admin/clearReports';
 import { darkroomStatsCommand } from '../src/commands/admin/darkroomStats';
+import { eventCarpoolsSetupCommand } from '../src/commands/admin/eventCarpoolsSetup';
 import { equipmentTermsMessageCommand } from '../src/commands/admin/equipmentTermsMessage';
 import { grantAdminCommand } from '../src/commands/admin/grantAdmin';
 import { honeypotWarningCommand } from '../src/commands/admin/honeypotWarning';
@@ -18,6 +19,7 @@ import { studioMessageCommand } from '../src/commands/admin/studioMessage';
 import { verifyMessageCommand } from '../src/commands/admin/verifyMessage';
 import { wikiMessageCommand } from '../src/commands/admin/wikiMessage';
 import { equipmentCommand } from '../src/commands/general/equipment';
+import { eventCarpoolsCommand } from '../src/commands/general/eventCarpools';
 import { healthCommand } from '../src/commands/general/health';
 import { merchCommand } from '../src/commands/general/merch';
 import { newsletterCommand } from '../src/commands/general/newsletter';
@@ -34,6 +36,8 @@ export const commands = [
   darkroomStatsCommand,
   equipmentCommand,
   equipmentTermsMessageCommand,
+  eventCarpoolsCommand,
+  eventCarpoolsSetupCommand,
   grantAdminCommand,
   healthCommand,
   honeypotWarningCommand,

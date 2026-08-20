@@ -25,6 +25,7 @@ import type {
   DiscordWebsiteStaffRoleResolveInternalEvent,
   EquipmentLoanParty,
   EquipmentLoanSyncInternalEvent,
+  EventCarpoolExpiryInternalEvent,
   FilmRequestReviewInternalEvent,
   MemberRolesInternalEvent,
   MemberReportProjection,
@@ -150,6 +151,13 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
     };
   }
 
+  if (type === 'website.event_carpool.expire') {
+    return {
+      event: parseEventCarpoolExpiryEvent(payload),
+      kind: 'eventCarpoolExpiry',
+    };
+  }
+
   if (type === 'website.member_report.sync') {
     return {
       event: parseMemberReportProjection(payload),
@@ -179,6 +187,37 @@ function parsePhotographerRequestExpirySweepEvent(
   type: PhotographerRequestExpirySweepInternalEvent['type'],
 ): PhotographerRequestExpirySweepInternalEvent {
   return { type };
+}
+
+function parseEventCarpoolExpiryEvent(
+  envelope: Record<string, unknown>,
+): EventCarpoolExpiryInternalEvent {
+  const payload = envelope.payload;
+  if (!isRecord(payload)) {
+    throw new BadRequestError(
+      'Event carpool expiry payload must be an object.',
+    );
+  }
+  const eventId = readString(payload, 'eventId');
+  const forumChannelId = readNullableString(payload, 'forumChannelId') ?? null;
+  const threadId = readNullableString(payload, 'threadId') ?? null;
+  const rootMessageId = readNullableString(payload, 'rootMessageId') ?? null;
+  if (!eventId || !isUuid(eventId)) {
+    throw new BadRequestError('Event carpool eventId must be a UUID.');
+  }
+  assertOptionalDiscordSnowflake(
+    forumChannelId,
+    'Event carpool forumChannelId',
+  );
+  assertOptionalDiscordSnowflake(threadId, 'Event carpool threadId');
+  assertOptionalDiscordSnowflake(rootMessageId, 'Event carpool rootMessageId');
+  return {
+    eventId,
+    forumChannelId,
+    rootMessageId,
+    threadId,
+    type: 'website.event_carpool.expire',
+  };
 }
 
 export function parseMemberReportProjection(

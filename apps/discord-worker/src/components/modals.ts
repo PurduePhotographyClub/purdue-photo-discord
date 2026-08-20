@@ -24,6 +24,10 @@ import {
   isMemberReportCorrectionModalCustomId,
   isMemberReportModalCustomId,
 } from '../services/discordMemberReportService';
+import {
+  handleEventCarpoolModalSubmit,
+  isEventCarpoolModalCustomId,
+} from '../services/discordEventCarpoolService';
 
 export async function handleModalSubmitInteraction(
   interaction: ModalSubmitInteraction,
@@ -43,6 +47,10 @@ export async function handleModalSubmitInteraction(
 
   if (isStudioModalCustomId(interaction.data.custom_id)) {
     return handleStudioModalSubmit(interaction, env);
+  }
+
+  if (isEventCarpoolModalCustomId(interaction.data.custom_id)) {
+    return handleEventCarpoolModalSubmit(interaction, env);
   }
 
   // Discord expects an interaction response even for unsupported custom IDs.

@@ -23,6 +23,7 @@ type WebsiteApiMethod = 'DELETE' | 'GET' | 'PATCH' | 'POST' | 'PUT';
 
 const INTERNAL_SOURCE_HEADER = 'x-pcc-internal-source';
 const INTERNAL_TOKEN_HEADER = 'x-internal-token';
+const ACTOR_DISCORD_ID_HEADER = 'x-pcc-actor-discord-id';
 const API_PREFIX = '/api';
 const API_V1_PREFIX = '/api/v1';
 const DISCORD_WORKER_SOURCE = 'discord-worker';
@@ -93,7 +94,12 @@ export async function requestWebsiteApi(
     options.method ?? (options.body === undefined ? 'GET' : 'POST');
   const body = options.body === undefined ? '' : JSON.stringify(options.body);
   const normalizedPath = normalizeApiPath(path);
-  const init = createApiRequestInit(env, method, body);
+  const init = createApiRequestInit(
+    env,
+    method,
+    body,
+    readActorDiscordId(options.body),
+  );
   if (body) {
     init.body = body;
   }
@@ -140,12 +146,16 @@ function createApiRequestInit(
   env: Env,
   method: WebsiteApiMethod,
   body: string,
+  actorDiscordId: string | null,
 ): RequestInit {
   const headers = new Headers();
   headers.set(INTERNAL_SOURCE_HEADER, DISCORD_WORKER_SOURCE);
 
   if (body) {
     headers.set('content-type', 'application/json;charset=UTF-8');
+  }
+  if (actorDiscordId) {
+    headers.set(ACTOR_DISCORD_ID_HEADER, actorDiscordId);
   }
 
   const token = getOptionalEnv(env, 'INTERNAL_TOKEN');
@@ -157,6 +167,17 @@ function createApiRequestInit(
     headers,
     method,
   };
+}
+
+function readActorDiscordId(body: unknown) {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return null;
+  }
+  const actorDiscordId = (body as Record<string, unknown>).actorDiscordId;
+  return typeof actorDiscordId === 'string' &&
+    /^\d{17,20}$/.test(actorDiscordId)
+    ? actorDiscordId
+    : null;
 }
 
 async function fetchApiWorker(

@@ -219,6 +219,14 @@ export interface PhotographerRequestExpirySweepInternalEvent {
   type: 'website.photographer_request.expired_sweep';
 }
 
+export interface EventCarpoolExpiryInternalEvent {
+  eventId: string;
+  forumChannelId: string | null;
+  rootMessageId: string | null;
+  threadId: string | null;
+  type: 'website.event_carpool.expire';
+}
+
 export interface MemberReportProjection {
   behavior: string;
   matchMethod: 'exact' | 'manual' | 'similar' | 'unmatched';
@@ -318,6 +326,10 @@ export type ParsedInternalEvent =
   | {
       event: PhotographerRequestExpirySweepInternalEvent;
       kind: 'photographerRequestExpirySweep';
+    }
+  | {
+      event: EventCarpoolExpiryInternalEvent;
+      kind: 'eventCarpoolExpiry';
     }
   | {
       event: MemberReportProjection;
