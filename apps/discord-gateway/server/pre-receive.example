@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+umask 027
+
+exec /usr/bin/node \
+  /usr/local/libexec/pccbot-gateway-server-deploy.mjs \
+  pre-receive

@@ -71,7 +71,8 @@ jobs:
               gh api \
                 --method POST \
                 "repos/$REPOSITORY/actions/workflows/$CI_WORKFLOW_ID/dispatches" \
-                -f ref=main
+                -f ref=main \
+                -f 'inputs[deploy_merged_main]=true'
               exit 0
             fi
 
