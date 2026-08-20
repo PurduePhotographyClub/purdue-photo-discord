@@ -649,6 +649,7 @@ async function restorePendingReview(input: {
     }
   }
 
+  let notificationFailed = false;
   if (failedActions.length === 0) {
     try {
       await sourceMember.send({
@@ -656,7 +657,7 @@ async function restorePendingReview(input: {
         content: RESTORED_ACCESS_COPY,
       });
     } catch (error) {
-      failedActions = [...failedActions, 'user notification'];
+      notificationFailed = true;
       input.logger.warn(
         'Could not notify the member that access was restored.',
         {
@@ -679,8 +680,11 @@ async function restorePendingReview(input: {
   const restoredActions = [
     ...(alert.restrictedRoleAdded ? ['Clown removed'] : []),
     ...(alert.verifiedRoleRemoved ? ['RealRaw restored'] : []),
+    notificationFailed
+      ? 'user notification failed'
+      : 'user notified that their access was restored',
   ];
-  const message = `${restoredActions.join('; ')}; user notified that their access was restored.`;
+  const message = `${restoredActions.join('; ')}.`;
   return reviewResult(true, 'restored', message);
 }
 

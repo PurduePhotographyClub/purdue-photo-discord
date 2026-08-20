@@ -249,7 +249,7 @@ test('allows only one winner when two moderators resolve the same review concurr
   assert.equal(calls.filter((call) => call.startsWith('announce:')).length, 1);
 });
 
-test('releases a review claim after a transient restoration failure', async () => {
+test('does not retry restored roles after a transient DM failure', async () => {
   const calls: string[] = [];
   const fixture = createDiscordFixture(calls, {
     content: FACE_VALUE_COMPOUND_TICKET_SALE,
@@ -269,9 +269,78 @@ test('releases a review claim after a transient restoration failure', async () =
   const first = await moderator.review(request);
   const retry = await moderator.review(request);
 
-  assert.equal(first.status, 'unavailable');
-  assert.equal(retry.status, 'restored');
-  assert.equal(calls.filter((call) => call.startsWith('dm:')).length, 2);
+  assert.equal(first.status, 'restored');
+  assert.equal(retry.status, 'already_resolved');
+  assert.equal(
+    calls.filter((call) => call === `remove:${SCAM_ROLE_ID}`).length,
+    1,
+  );
+  assert.equal(
+    calls.filter((call) => call === `add:${VERIFIED_ROLE_ID}`).length,
+    1,
+  );
+  assert.equal(calls.filter((call) => call.startsWith('dm:')).length, 1);
+});
+
+test('finalizes restored access when the best-effort DM fails permanently', async () => {
+  const calls: string[] = [];
+  const warnings: Array<{ message: string; meta?: unknown }> = [];
+  const directMessageError = new Error('Member does not accept DMs');
+  const fixture = createDiscordFixture(calls, {
+    content: FACE_VALUE_COMPOUND_TICKET_SALE,
+    directMessageError,
+    mentionsEveryone: false,
+  });
+  const moderator = createDiscordScamModerator(
+    createConfig(),
+    createLogger([], warnings),
+  );
+
+  await moderator.initialize(fixture.client);
+  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+  const request = {
+    action: 'restore' as const,
+    actorId: MODERATOR_ID,
+    alertMessageId: ALERT_MESSAGE_ID,
+    reviewId: MESSAGE_ID,
+  };
+  const result = await moderator.review(request);
+  const duplicate = await moderator.review(request);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'restored');
+  assert.match(result.message, /user notification failed/u);
+  assert.equal(duplicate.status, 'already_resolved');
+  assert.equal(
+    calls.filter((call) => call === `remove:${SCAM_ROLE_ID}`).length,
+    1,
+  );
+  assert.equal(
+    calls.filter((call) => call === `add:${VERIFIED_ROLE_ID}`).length,
+    1,
+  );
+  assert.equal(calls.filter((call) => call.startsWith('dm:')).length, 1);
+  assert.match(getPayloadText(fixture.alertEdits[0]), /Scam actions removed/u);
+  assert.match(
+    getPayloadText(fixture.alertEdits[0]),
+    /user notification failed/u,
+  );
+  assert.deepEqual(
+    warnings.find(
+      (entry) =>
+        entry.message ===
+        'Could not notify the member that access was restored.',
+    ),
+    {
+      message: 'Could not notify the member that access was restored.',
+      meta: {
+        error: directMessageError,
+        guildId: GUILD_ID,
+        userId: USER_ID,
+      },
+    },
+  );
+  assert.doesNotMatch(JSON.stringify(warnings), /Bruno Mars/u);
 });
 
 test('restoration does not depend on the already-deleted source message', async () => {
@@ -423,6 +492,7 @@ function createDiscordFixture(
     addRoleError?: Error;
     content?: string;
     deleteError?: unknown;
+    directMessageError?: Error;
     directMessageErrorOnce?: Error;
     mentionsEveryone?: boolean;
     moderatorAuthorized?: boolean;
@@ -483,6 +553,9 @@ function createDiscordFixture(
     send: async (payload: (typeof directMessages)[number]) => {
       calls.push(`dm:${USER_ID}`);
       directMessages.push(payload);
+      if (options.directMessageError) {
+        throw options.directMessageError;
+      }
       if (options.directMessageErrorOnce && directMessages.length === 1) {
         throw options.directMessageErrorOnce;
       }
@@ -602,13 +675,18 @@ function getPayloadText(payload: DiscordPayload | undefined) {
   });
 }
 
-function createLogger(errorMessages: string[] = []): Logger {
+function createLogger(
+  errorMessages: string[] = [],
+  warnings: Array<{ message: string; meta?: unknown }> = [],
+): Logger {
   return {
     debug: () => undefined,
     error: (message) => {
       errorMessages.push(message);
     },
     info: () => undefined,
-    warn: () => undefined,
+    warn: (message, meta) => {
+      warnings.push({ message, ...(meta === undefined ? {} : { meta }) });
+    },
   };
 }
