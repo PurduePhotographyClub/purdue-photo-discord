@@ -54,10 +54,9 @@ test('validates Discord roles before deleting and quarantining a scam message', 
   assert.deepEqual(fixture.alerts[0]?.allowedMentions, { parse: [] });
 });
 
-test('sends review-only ticket messages to the private alert without quarantine', async () => {
+test('sends messages that report scams to the private alert without quarantine', async () => {
   for (const content of [
     REPORTED_TICKET_TEMPLATE,
-    FACE_VALUE_COMPOUND_TICKET_SALE,
     WARNING_PREFIXED_TICKET_OFFER,
   ]) {
     const calls: string[] = [];
@@ -76,9 +75,32 @@ test('sends review-only ticket messages to the private alert without quarantine'
     assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}`], content);
     assert.equal(moderator.getHealth().handledCount, 1);
     const alertText = getPayloadText(fixture.alerts[0]);
-    assert.match(alertText, /review/u);
+    assert.match(alertText, /Scam report awaiting review/u);
     assert.doesNotMatch(alertText, /message deleted|clown added/u);
   }
+});
+
+test('removes and sanctions a possible ticket scam immediately', async () => {
+  const calls: string[] = [];
+  const fixture = createDiscordFixture(calls, {
+    content: FACE_VALUE_COMPOUND_TICKET_SALE,
+    mentionsEveryone: false,
+  });
+  const moderator = createDiscordScamModerator(createConfig(), createLogger());
+
+  await moderator.initialize(fixture.client);
+  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+
+  assert.deepEqual(calls, [
+    `delete:${MESSAGE_ID}`,
+    `remove:${VERIFIED_ROLE_ID}`,
+    `add:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
+    `alert:${ALERT_CHANNEL_ID}`,
+  ]);
+  assert.match(getPayloadText(fixture.alerts[0]), /Possible scam removed/u);
+  assert.match(getPayloadText(fixture.alerts[0]), /Remove actions/u);
+  assert.doesNotMatch(getPayloadText(fixture.alerts[0]), /Confirm scam/u);
 });
 
 test('disables moderation when the Clown role gains guild permissions', async () => {
@@ -143,7 +165,7 @@ test('reports a protected member deletion failure accurately', async () => {
   );
 });
 
-test('lets an authorized moderator confirm an actionable review exactly once', async () => {
+test('lets an authorized moderator reverse automatic actions exactly once', async () => {
   const calls: string[] = [];
   const fixture = createDiscordFixture(calls, {
     content: FACE_VALUE_COMPOUND_TICKET_SALE,
@@ -154,32 +176,39 @@ test('lets an authorized moderator confirm an actionable review exactly once', a
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const first = await moderator.review({
-    action: 'confirm',
+    action: 'restore',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
   });
   const duplicate = await moderator.review({
-    action: 'confirm',
+    action: 'restore',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
   });
 
-  assert.equal(first.status, 'confirmed');
+  assert.equal(first.status, 'restored');
   assert.equal(duplicate.status, 'already_resolved');
   assert.deepEqual(calls, [
-    `alert:${ALERT_CHANNEL_ID}`,
     `delete:${MESSAGE_ID}`,
-    `add:${SCAM_ROLE_ID}`,
     `remove:${VERIFIED_ROLE_ID}`,
+    `add:${SCAM_ROLE_ID}`,
     `announce:${CHANNEL_ID}`,
+    `alert:${ALERT_CHANNEL_ID}`,
+    `remove:${SCAM_ROLE_ID}`,
+    `add:${VERIFIED_ROLE_ID}`,
+    `dm:${USER_ID}`,
+  ]);
+  assert.deepEqual(fixture.directMessages, [
+    {
+      allowedMentions: { parse: [] },
+      content:
+        'A moderator reviewed the message flagged by the scam detector. Your server access has been restored.',
+    },
   ]);
   assert.equal(fixture.alertEdits.length, 1);
-  assert.match(
-    getPayloadText(fixture.alertEdits[0]),
-    /Scam confirmed by moderator/u,
-  );
+  assert.match(getPayloadText(fixture.alertEdits[0]), /Scam actions removed/u);
   assert.deepEqual(fixture.alertEdits[0]?.components, []);
 });
 
@@ -194,7 +223,7 @@ test('allows only one winner when two moderators resolve the same review concurr
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const request = {
-    action: 'confirm' as const,
+    action: 'restore' as const,
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
@@ -206,26 +235,33 @@ test('allows only one winner when two moderators resolve the same review concurr
 
   assert.deepEqual(results.map((result) => result.status).sort(), [
     'already_resolved',
-    'confirmed',
+    'restored',
   ]);
-  assert.equal(calls.filter((call) => call.startsWith('delete:')).length, 1);
-  assert.equal(calls.filter((call) => call.startsWith('add:')).length, 1);
+  assert.equal(
+    calls.filter((call) => call === `remove:${SCAM_ROLE_ID}`).length,
+    1,
+  );
+  assert.equal(
+    calls.filter((call) => call === `add:${VERIFIED_ROLE_ID}`).length,
+    1,
+  );
+  assert.equal(calls.filter((call) => call.startsWith('dm:')).length, 1);
   assert.equal(calls.filter((call) => call.startsWith('announce:')).length, 1);
 });
 
-test('releases a review claim after a transient confirmation failure', async () => {
+test('releases a review claim after a transient restoration failure', async () => {
   const calls: string[] = [];
   const fixture = createDiscordFixture(calls, {
     content: FACE_VALUE_COMPOUND_TICKET_SALE,
+    directMessageErrorOnce: new Error('DMs temporarily unavailable'),
     mentionsEveryone: false,
-    sourceChannelFetchErrorOnce: new Error('Temporary Discord outage'),
   });
   const moderator = createDiscordScamModerator(createConfig(), createLogger());
 
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const request = {
-    action: 'confirm' as const,
+    action: 'restore' as const,
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
@@ -234,61 +270,11 @@ test('releases a review claim after a transient confirmation failure', async () 
   const retry = await moderator.review(request);
 
   assert.equal(first.status, 'unavailable');
-  assert.equal(retry.status, 'confirmed');
-  assert.equal(calls.filter((call) => call.startsWith('delete:')).length, 1);
+  assert.equal(retry.status, 'restored');
+  assert.equal(calls.filter((call) => call.startsWith('dm:')).length, 2);
 });
 
-test('invalidates confirmation when the reviewed message content changed', async () => {
-  const calls: string[] = [];
-  const fixture = createDiscordFixture(calls, {
-    content: FACE_VALUE_COMPOUND_TICKET_SALE,
-    mentionsEveryone: false,
-  });
-  const moderator = createDiscordScamModerator(createConfig(), createLogger());
-
-  await moderator.initialize(fixture.client);
-  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
-  (fixture.message as unknown as { content: string }).content =
-    `Scam warning: ${FACE_VALUE_COMPOUND_TICKET_SALE}`;
-  const result = await moderator.review({
-    action: 'confirm',
-    actorId: MODERATOR_ID,
-    alertMessageId: ALERT_MESSAGE_ID,
-    reviewId: MESSAGE_ID,
-  });
-
-  assert.equal(result.status, 'message_changed');
-  assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}`]);
-  assert.match(getPayloadText(fixture.alertEdits[0]), /could not be applied/u);
-});
-
-test('attempts Clown and verified role changes independently after confirmation', async () => {
-  const calls: string[] = [];
-  const fixture = createDiscordFixture(calls, {
-    addRoleError: new Error('Could not add Clown'),
-    content: FACE_VALUE_COMPOUND_TICKET_SALE,
-    mentionsEveryone: false,
-    removeRoleError: new Error('Could not remove verified'),
-  });
-  const moderator = createDiscordScamModerator(createConfig(), createLogger());
-
-  await moderator.initialize(fixture.client);
-  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
-  const result = await moderator.review({
-    action: 'confirm',
-    actorId: MODERATOR_ID,
-    alertMessageId: ALERT_MESSAGE_ID,
-    reviewId: MESSAGE_ID,
-  });
-
-  assert.equal(result.status, 'confirmed');
-  assert.equal(calls.includes(`add:${SCAM_ROLE_ID}`), true);
-  assert.equal(calls.includes(`remove:${VERIFIED_ROLE_ID}`), true);
-  assert.match(result.message, /Clown role/u);
-  assert.match(result.message, /verified role/u);
-});
-
-test('dismisses a review without touching the source message or member roles', async () => {
+test('restoration does not depend on the already-deleted source message', async () => {
   const calls: string[] = [];
   const fixture = createDiscordFixture(calls, {
     content: FACE_VALUE_COMPOUND_TICKET_SALE,
@@ -299,15 +285,73 @@ test('dismisses a review without touching the source message or member roles', a
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const result = await moderator.review({
-    action: 'dismiss',
+    action: 'restore',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
   });
 
-  assert.equal(result.status, 'dismissed');
-  assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}`]);
-  assert.match(getPayloadText(fixture.alertEdits[0]), /Scam review dismissed/u);
+  assert.equal(result.status, 'restored');
+  assert.equal(calls.includes(`remove:${SCAM_ROLE_ID}`), true);
+  assert.equal(calls.includes(`add:${VERIFIED_ROLE_ID}`), true);
+});
+
+test('attempts Clown removal and RealRaw restoration independently', async () => {
+  const calls: string[] = [];
+  const fixture = createDiscordFixture(calls, {
+    content: FACE_VALUE_COMPOUND_TICKET_SALE,
+    mentionsEveryone: false,
+    restoreClownRemovalError: new Error('Could not remove Clown'),
+    restoreVerifiedAddError: new Error('Could not add RealRaw'),
+  });
+  const moderator = createDiscordScamModerator(createConfig(), createLogger());
+
+  await moderator.initialize(fixture.client);
+  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+  const result = await moderator.review({
+    action: 'restore',
+    actorId: MODERATOR_ID,
+    alertMessageId: ALERT_MESSAGE_ID,
+    reviewId: MESSAGE_ID,
+  });
+
+  assert.equal(result.status, 'unavailable');
+  assert.equal(
+    calls.filter((call) => call === `remove:${SCAM_ROLE_ID}`).length,
+    1,
+  );
+  assert.equal(
+    calls.filter((call) => call === `add:${VERIFIED_ROLE_ID}`).length,
+    1,
+  );
+  assert.match(result.message, /Clown role removal/u);
+  assert.match(result.message, /RealRaw restoration/u);
+});
+
+test('keeps automatic actions when a moderator marks them reviewed', async () => {
+  const calls: string[] = [];
+  const fixture = createDiscordFixture(calls, {
+    content: FACE_VALUE_COMPOUND_TICKET_SALE,
+    mentionsEveryone: false,
+  });
+  const moderator = createDiscordScamModerator(createConfig(), createLogger());
+
+  await moderator.initialize(fixture.client);
+  await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+  const result = await moderator.review({
+    action: 'reviewed',
+    actorId: MODERATOR_ID,
+    alertMessageId: ALERT_MESSAGE_ID,
+    reviewId: MESSAGE_ID,
+  });
+
+  assert.equal(result.status, 'reviewed');
+  assert.equal(calls.includes(`remove:${SCAM_ROLE_ID}`), false);
+  assert.equal(calls.includes(`add:${VERIFIED_ROLE_ID}`), false);
+  assert.match(
+    getPayloadText(fixture.alertEdits[0]),
+    /Automatic scam actions kept/u,
+  );
 });
 
 test('rechecks moderator authorization on the Gateway before resolving', async () => {
@@ -322,14 +366,14 @@ test('rechecks moderator authorization on the Gateway before resolving', async (
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const result = await moderator.review({
-    action: 'confirm',
+    action: 'restore',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
   });
 
   assert.equal(result.status, 'forbidden');
-  assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}`]);
+  assert.equal(calls.includes(`remove:${SCAM_ROLE_ID}`), false);
   assert.equal(fixture.alertEdits.length, 0);
 });
 
@@ -344,7 +388,7 @@ test('does not let a review button punish a scam reporter', async () => {
   await moderator.initialize(fixture.client);
   await moderator.handle(fixture.message, 'MESSAGE_CREATE');
   const forbidden = await moderator.review({
-    action: 'confirm',
+    action: 'restore',
     actorId: MODERATOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: MESSAGE_ID,
@@ -379,17 +423,23 @@ function createDiscordFixture(
     addRoleError?: Error;
     content?: string;
     deleteError?: unknown;
+    directMessageErrorOnce?: Error;
     mentionsEveryone?: boolean;
     moderatorAuthorized?: boolean;
     protectedMember?: boolean;
     removeRoleError?: Error;
+    restoreClownRemovalError?: Error;
+    restoreVerifiedAddError?: Error;
     restrictedPermissions?: bigint;
-    sourceChannelFetchErrorOnce?: Error;
   } = {},
 ) {
   const alerts: DiscordPayload[] = [];
   const alertEdits: DiscordPayload[] = [];
   const announcements: Array<{
+    allowedMentions: { parse: string[] };
+    content: string;
+  }> = [];
+  const directMessages: Array<{
     allowedMentions: { parse: string[] };
     content: string;
   }> = [];
@@ -412,17 +462,30 @@ function createDiscordFixture(
     roles: {
       add: async (roleId: string) => {
         calls.push(`add:${roleId}`);
-        if (options.addRoleError) {
+        if (roleId === SCAM_ROLE_ID && options.addRoleError) {
           throw options.addRoleError;
+        }
+        if (roleId === VERIFIED_ROLE_ID && options.restoreVerifiedAddError) {
+          throw options.restoreVerifiedAddError;
         }
       },
       cache: new Map([[VERIFIED_ROLE_ID, verifiedRole]]),
       remove: async (roleId: string) => {
         calls.push(`remove:${roleId}`);
-        if (options.removeRoleError) {
+        if (roleId === VERIFIED_ROLE_ID && options.removeRoleError) {
           throw options.removeRoleError;
         }
+        if (roleId === SCAM_ROLE_ID && options.restoreClownRemovalError) {
+          throw options.restoreClownRemovalError;
+        }
       },
+    },
+    send: async (payload: (typeof directMessages)[number]) => {
+      calls.push(`dm:${USER_ID}`);
+      directMessages.push(payload);
+      if (options.directMessageErrorOnce && directMessages.length === 1) {
+        throw options.directMessageErrorOnce;
+      }
     },
   };
   const moderatorMember = {
@@ -450,19 +513,9 @@ function createDiscordFixture(
         roleId === SCAM_ROLE_ID ? restrictedRole : verifiedRole,
     },
   };
-  let sourceChannelFetchAttempts = 0;
   const client = {
     channels: {
       fetch: async (channelId: string) => {
-        if (channelId === CHANNEL_ID) {
-          sourceChannelFetchAttempts += 1;
-          if (
-            sourceChannelFetchAttempts === 1 &&
-            options.sourceChannelFetchErrorOnce
-          ) {
-            throw options.sourceChannelFetchErrorOnce;
-          }
-        }
         return {
           isSendable: () => true,
           isTextBased: () => true,
@@ -522,7 +575,14 @@ function createDiscordFixture(
     webhookId: null,
   } as unknown as Message;
 
-  return { alertEdits, alerts, announcements, client, message };
+  return {
+    alertEdits,
+    alerts,
+    announcements,
+    client,
+    directMessages,
+    message,
+  };
 }
 
 interface DiscordPayload {

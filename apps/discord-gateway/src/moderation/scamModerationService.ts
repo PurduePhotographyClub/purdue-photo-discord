@@ -48,11 +48,13 @@ export interface ScamModerationAlert {
   guildId: string;
   messageId: string;
   protectedMember: boolean;
-  reviewOnly: boolean;
+  requiresReview: boolean;
   reviewReason: 'reported_scam' | 'suspicious_offer';
+  restrictedRoleAdded: boolean;
   score: number;
   signalIds: readonly ScamSignalId[];
   userId: string;
+  verifiedRoleRemoved: boolean;
 }
 
 export interface ScamModerationActions {
@@ -139,6 +141,8 @@ export function createScamModerationService(
       }
 
       let failedActions: ScamModerationActionId[] = [];
+      let restrictedRoleAdded = false;
+      let verifiedRoleRemoved = false;
       const runAction = async (
         actionId: ScamModerationActionId,
         action: () => Promise<void>,
@@ -163,18 +167,20 @@ export function createScamModerationService(
                 guildId: config.guildId,
                 messageId: message.messageId,
                 protectedMember: message.protectedMember,
-                reviewOnly: analysis.requiresReview,
+                requiresReview: analysis.requiresReview,
                 reviewReason: analysis.reportedContext
                   ? 'reported_scam'
                   : 'suspicious_offer',
+                restrictedRoleAdded,
                 score: analysis.score,
                 signalIds: analysis.signalIds,
                 userId: message.userId,
+                verifiedRoleRemoved,
               }),
             )
           : Promise.resolve(true);
 
-      if (analysis.requiresReview) {
+      if (analysis.requiresReview && analysis.reportedContext) {
         const alertSent = await sendAlert();
         if (!alertSent) {
           recentMessageIds = releaseClaim(recentMessageIds, message.messageId);
@@ -197,7 +203,7 @@ export function createScamModerationService(
 
       if (!message.protectedMember) {
         if (message.roleIds.includes(config.verifiedRoleId)) {
-          await runAction('remove_verified_role', () =>
+          verifiedRoleRemoved = await runAction('remove_verified_role', () =>
             actions.removeVerifiedRole(
               config.guildId,
               message.userId,
@@ -207,7 +213,7 @@ export function createScamModerationService(
         }
 
         if (!message.roleIds.includes(config.restrictedRoleId)) {
-          await runAction('add_restricted_role', () =>
+          restrictedRoleAdded = await runAction('add_restricted_role', () =>
             actions.addRestrictedRole(
               config.guildId,
               message.userId,

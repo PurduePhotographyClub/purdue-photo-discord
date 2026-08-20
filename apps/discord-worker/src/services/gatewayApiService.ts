@@ -27,7 +27,7 @@ export interface GatewayPresenceSnapshot {
 }
 
 export interface GatewayScamReviewRequest {
-  action: 'confirm' | 'dismiss' | 'reviewed';
+  action: 'restore' | 'reviewed';
   actorId: string;
   alertMessageId: string;
   reviewId: string;
@@ -38,11 +38,9 @@ export interface GatewayScamReviewResult {
   ok: boolean;
   status:
     | 'already_resolved'
-    | 'confirmed'
-    | 'dismissed'
     | 'expired'
     | 'forbidden'
-    | 'message_changed'
+    | 'restored'
     | 'reviewed'
     | 'unavailable';
 }
@@ -233,11 +231,9 @@ function isGatewayScamReviewStatus(
 ): value is GatewayScamReviewResult['status'] {
   return (
     value === 'already_resolved' ||
-    value === 'confirmed' ||
-    value === 'dismissed' ||
     value === 'expired' ||
     value === 'forbidden' ||
-    value === 'message_changed' ||
+    value === 'restored' ||
     value === 'reviewed' ||
     value === 'unavailable'
   );

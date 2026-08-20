@@ -108,8 +108,8 @@ test('does not moderate bots, webhooks, system messages, DMs, other guilds, or e
   }
 });
 
-test('privately alerts on review-only scam reports and face-value ticket pitches without quarantine', async () => {
-  const reviewOnlyMessages = [
+test('privately alerts on scam reports without punishing the reporter', async () => {
+  const reportedMessages = [
     createMessage({
       content: REPORTED_TICKET_TEMPLATE,
       mentionsEveryone: false,
@@ -119,16 +119,12 @@ test('privately alerts on review-only scam reports and face-value ticket pitches
         'Scam warning: @everyone Giving away my MacBook for free because I upgraded. First come first served. DM me on WhatsApp at +1 (202) 555-0111.',
     }),
     createMessage({
-      content: FACE_VALUE_COMPOUND_TICKET_SALE,
-      mentionsEveryone: false,
-    }),
-    createMessage({
       content: WARNING_PREFIXED_TICKET_OFFER,
       mentionsEveryone: false,
     }),
   ];
 
-  for (const message of reviewOnlyMessages) {
+  for (const message of reportedMessages) {
     const calls: string[] = [];
     const result = await createService().moderate(
       message,
@@ -140,6 +136,40 @@ test('privately alerts on review-only scam reports and face-value ticket pitches
     assert.equal(result.analysis?.requiresReview, true);
     assert.deepEqual(calls, [`alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`]);
   }
+});
+
+test('deletes and sanctions a possible scam before asking moderators to review it', async () => {
+  const calls: string[] = [];
+  const alerts: ScamModerationAlert[] = [];
+  const baseActions = createActions(calls);
+  const actions: ScamModerationActionsWithAnnouncement = {
+    ...baseActions,
+    sendAlert: async (alertChannelId, alert) => {
+      calls.push(`alert:${alertChannelId}:${alert.messageId}`);
+      alerts.push(alert);
+    },
+  };
+
+  const result = await createService().moderate(
+    createMessage({
+      content: FACE_VALUE_COMPOUND_TICKET_SALE,
+      mentionsEveryone: false,
+    }),
+    actions,
+  );
+
+  assert.equal(result.analysis?.isLikelyScam, false);
+  assert.equal(result.analysis?.requiresReview, true);
+  assert.deepEqual(calls, [
+    `delete:${CHANNEL_ID}:${MESSAGE_ID}`,
+    `remove:${GUILD_ID}:${USER_ID}:${VERIFIED_ROLE_ID}`,
+    `add:${GUILD_ID}:${USER_ID}:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
+    `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
+  ]);
+  assert.equal(alerts[0]?.requiresReview, true);
+  assert.equal(alerts[0]?.restrictedRoleAdded, true);
+  assert.equal(alerts[0]?.verifiedRoleRemoved, true);
 });
 
 test('includes source evidence and distinguishes reporters from suspicious offers', async () => {

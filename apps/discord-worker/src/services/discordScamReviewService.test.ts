@@ -19,7 +19,7 @@ const REVIEW_ID = '1535080862603808808';
 const ALERT_MESSAGE_ID = '1536065199889584209';
 const ACTOR_ID = '1063962284386439199';
 
-test('an Executive can confirm a scam through the signed Gateway API', async () => {
+test('an Executive can restore access through the signed Gateway API', async () => {
   let requestUrl = '';
   let requestBody: unknown;
   const env: Env = {
@@ -33,15 +33,15 @@ test('an Executive can confirm a scam through the signed Gateway API', async () 
           /^sha256=[a-f0-9]{64}$/u,
         );
         return Response.json({
-          message: 'Message deleted; verified removed; Clown added.',
+          message: 'Clown removed; RealRaw restored; user notified.',
           ok: true,
-          status: 'confirmed',
+          status: 'restored',
         });
       },
     },
     WORKER_SECRET: 'test-secret',
   };
-  const interaction = createInteraction('confirm', [
+  const interaction = createInteraction('restore', [
     DISCORD_ROLE_IDS.executive,
   ]);
 
@@ -49,14 +49,14 @@ test('an Executive can confirm a scam through the signed Gateway API', async () 
 
   assert.equal(requestUrl, 'http://gateway.internal/scam-review');
   assert.deepEqual(requestBody, {
-    action: 'confirm',
+    action: 'restore',
     actorId: ACTOR_ID,
     alertMessageId: ALERT_MESSAGE_ID,
     reviewId: REVIEW_ID,
   });
   assert.equal(
     response.data?.content,
-    'Message deleted; verified removed; Clown added.',
+    'Clown removed; RealRaw restored; user notified.',
   );
   assert.equal(
     Number(response.data?.flags) & InteractionResponseFlags.EPHEMERAL,
@@ -74,7 +74,7 @@ test('rejects nonstaff and wrong-channel scam review controls without calling th
         return Response.json({
           message: 'unexpected',
           ok: true,
-          status: 'dismissed',
+          status: 'reviewed',
         });
       },
     },
@@ -82,12 +82,12 @@ test('rejects nonstaff and wrong-channel scam review controls without calling th
   };
 
   const nonstaff = await handleDiscordScamReviewButton(
-    createInteraction('dismiss', []),
+    createInteraction('restore', []),
     env,
   );
   const wrongChannel = await handleDiscordScamReviewButton(
     {
-      ...createInteraction('dismiss', [DISCORD_ROLE_IDS.admin]),
+      ...createInteraction('restore', [DISCORD_ROLE_IDS.admin]),
       channel_id: '1512507610186907648',
     },
     env,
@@ -108,18 +108,18 @@ test('recognizes only strict scam review IDs and defers their interaction', () =
     true,
   );
   assert.equal(
-    isDiscordScamReviewButtonCustomId('scam-review:confirm:not-valid'),
+    isDiscordScamReviewButtonCustomId('scam-review:restore:not-valid'),
     false,
   );
   assert.equal(
-    isDiscordScamReviewButtonCustomId(`scam-review:confirm:${REVIEW_ID}:extra`),
+    isDiscordScamReviewButtonCustomId(`scam-review:restore:${REVIEW_ID}:extra`),
     false,
   );
   assert.equal(shouldDeferDiscordInteraction(interaction), true);
 });
 
 function createInteraction(
-  action: 'confirm' | 'dismiss' | 'reviewed',
+  action: 'restore' | 'reviewed',
   roles: string[],
 ): ComponentInteraction {
   return {

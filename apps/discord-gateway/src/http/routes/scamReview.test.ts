@@ -5,13 +5,13 @@ import { parseScamReviewRequest } from './scamReview.js';
 test('parses the narrow signed scam review control payload', () => {
   assert.deepEqual(
     parseScamReviewRequest({
-      action: 'confirm',
+      action: 'restore',
       actorId: '1063962284386439199',
       alertMessageId: '1536065199889584209',
       reviewId: '1535080862603808808',
     }),
     {
-      action: 'confirm',
+      action: 'restore',
       actorId: '1063962284386439199',
       alertMessageId: '1536065199889584209',
       reviewId: '1535080862603808808',
@@ -33,7 +33,7 @@ test('rejects malformed actions and Discord IDs', () => {
   assert.throws(
     () =>
       parseScamReviewRequest({
-        action: 'confirm',
+        action: 'restore',
         actorId: 'not-a-user',
         alertMessageId: '1536065199889584209',
         reviewId: '1535080862603808808',
