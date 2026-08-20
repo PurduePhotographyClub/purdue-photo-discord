@@ -547,14 +547,14 @@ function createEventCarpoolModal(): DiscordMessagePayload {
       textInput(
         EVENT_CARPOOL_TITLE_INPUT,
         'Event or trip name',
-        'Grissom aviation day',
+        'Chicago trip',
         2,
         100,
       ),
       textInput(
         EVENT_CARPOOL_DESTINATION_INPUT,
         'Destination',
-        'Grissom Air Museum',
+        'Chicago trip',
         2,
         200,
       ),
