@@ -12,6 +12,7 @@ const USER_ID = '1351727646211313784';
 const SCAM_ROLE_ID = '1515784633374212247';
 const VERIFIED_ROLE_ID = '1503180707550199920';
 const ALERT_CHANNEL_ID = '1232870129000386620';
+const SCAM_EXCLUDED_FORUM_CHANNEL_ID = '1519110699786305798';
 const ALERT_MESSAGE_ID = '1536065199889584209';
 const MODERATOR_ID = '1063962284386439199';
 const ADMIN_ROLE_ID = '1364457359061155870';
@@ -52,6 +53,34 @@ test('validates Discord roles before deleting and quarantining a scam message', 
   assert.match(alertText, /Probable giveaway scam detected/u);
   assert.match(alertText, /MacBook|WhatsApp|555-0109/u);
   assert.deepEqual(fixture.alerts[0]?.allowedMentions, { parse: [] });
+});
+
+test('ignores the excluded forum and its child threads', async () => {
+  const messages = [
+    { channelId: SCAM_EXCLUDED_FORUM_CHANNEL_ID },
+    {
+      channelId: '1536065199889584211',
+      channelParentId: SCAM_EXCLUDED_FORUM_CHANNEL_ID,
+    },
+  ];
+
+  for (const messageOptions of messages) {
+    const calls: string[] = [];
+    const fixture = createDiscordFixture(calls, messageOptions);
+    const moderator = createDiscordScamModerator(
+      {
+        ...createConfig(),
+        excludedChannelIds: new Set([SCAM_EXCLUDED_FORUM_CHANNEL_ID]),
+      },
+      createLogger(),
+    );
+
+    await moderator.initialize(fixture.client);
+    await moderator.handle(fixture.message, 'MESSAGE_CREATE');
+
+    assert.deepEqual(calls, []);
+    assert.equal(moderator.getHealth().handledCount, 0);
+  }
 });
 
 test('sends messages that report scams to the private alert without quarantine', async () => {
@@ -490,6 +519,8 @@ function createDiscordFixture(
   calls: string[],
   options: {
     addRoleError?: Error;
+    channelId?: string;
+    channelParentId?: string | null;
     content?: string;
     deleteError?: unknown;
     directMessageError?: Error;
@@ -628,7 +659,11 @@ function createDiscordFixture(
       createdTimestamp: Date.now() - 365 * 24 * 60 * 60 * 1_000,
       id: USER_ID,
     },
-    channelId: CHANNEL_ID,
+    channel: {
+      isThread: () => options.channelParentId !== undefined,
+      parentId: options.channelParentId ?? null,
+    },
+    channelId: options.channelId ?? CHANNEL_ID,
     content:
       options.content ??
       '@everyone Giving out my MacBook and Canon camera for free. First come first serve. DM if interested on WhatsApp +1 (202) 555-0109.',
