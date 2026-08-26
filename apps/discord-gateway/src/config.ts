@@ -49,6 +49,7 @@ export type GatewayPresenceStatus = 'dnd' | 'idle' | 'invisible' | 'online';
 const DEFAULT_SCAM_RESTRICTED_ROLE_ID = '1515784633374212247';
 const DEFAULT_VERIFIED_ROLE_ID = '1503180707550199920';
 const DEFAULT_HONEYPOT_CHANNEL_ID = '1519110560925483008';
+const DEFAULT_SCAM_EXCLUDED_FORUM_CHANNEL_ID = '1519110699786305798';
 const DEFAULT_PROTECTED_ROLE_IDS = [
   '1364457359061155870',
   '1198569577383198730',
@@ -181,6 +182,7 @@ function readScamModerationConfig(
   );
   const excludedChannelIds = new Set<string>([
     DEFAULT_HONEYPOT_CHANNEL_ID,
+    DEFAULT_SCAM_EXCLUDED_FORUM_CHANNEL_ID,
     ...readSnowflakeSet(env, 'DISCORD_SCAM_EXCLUDED_CHANNEL_IDS'),
     alertChannelId,
   ]);

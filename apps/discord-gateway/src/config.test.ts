@@ -34,7 +34,11 @@ test('enables local content inspection without forwarding message content', () =
   assert.deepEqual(config.scamModeration, {
     alertChannelId: '1232870129000386620',
     enabled: true,
-    excludedChannelIds: new Set(['1519110560925483008', '1232870129000386620']),
+    excludedChannelIds: new Set([
+      '1519110560925483008',
+      '1519110699786305798',
+      '1232870129000386620',
+    ]),
     guildId: '1182061172309106708',
     protectedRoleIds: new Set(['1364457359061155870', '1198569577383198730']),
     restrictedRoleId: '1515784633374212247',

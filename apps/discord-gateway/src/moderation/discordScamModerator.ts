@@ -371,7 +371,22 @@ function isInspectableMessage(
     !message.author.bot &&
     !message.system &&
     !message.webhookId &&
-    !config.excludedChannelIds.has(message.channelId)
+    !isExcludedScamChannel(message, config)
+  );
+}
+
+function isExcludedScamChannel(
+  message: Message,
+  config: GatewayScamModerationConfig,
+) {
+  if (config.excludedChannelIds.has(message.channelId)) {
+    return true;
+  }
+
+  return (
+    message.channel.isThread() &&
+    message.channel.parentId !== null &&
+    config.excludedChannelIds.has(message.channel.parentId)
   );
 }
 
