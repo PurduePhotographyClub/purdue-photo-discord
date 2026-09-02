@@ -406,7 +406,11 @@ function createEquipmentTermsPayload(env: Env): {
 }
 
 function shouldCreateLoanChannel(event: EquipmentLoanSyncInternalEvent) {
-  return event.status === 'active' || event.status === 'pending_return';
+  return (
+    event.status === 'approved' ||
+    event.status === 'active' ||
+    event.status === 'pending_return'
+  );
 }
 
 async function sendEquipmentLoanMessage(
@@ -599,6 +603,10 @@ function buildEquipmentLoanComponents(
 function buildEquipmentLoanContent(event: EquipmentLoanSyncInternalEvent) {
   if (event.status === 'returned') {
     return 'This equipment loan has been returned.';
+  }
+
+  if (event.status === 'approved') {
+    return 'This PPC equipment request is approved. Scan the Code 128 asset tag at pickup to check it out.';
   }
 
   if (event.status === 'pending_return') {
@@ -811,6 +819,16 @@ function buildEquipmentLoanDmContent(
             'Equipment loan approved',
             'A coordination thread is ready in Discord.',
           );
+    case 'approved':
+      return role === 'borrower'
+        ? buildMessage(
+            'Equipment request approved',
+            'Coordinate pickup with the PPC equipment team. Staff will scan the asset tag when the gear is handed over.',
+          )
+        : buildMessage(
+            'Equipment ready for pickup',
+            'Scan the Code 128 asset tag when the gear is handed to the borrower.',
+          );
     case 'pending_return':
       return role === 'borrower'
         ? buildMessage(
@@ -837,6 +855,8 @@ function buildEquipmentLoanDmContent(
 
 function formatLoanStatus(status: EquipmentLoanSyncInternalEvent['status']) {
   switch (status) {
+    case 'approved':
+      return 'Awaiting Checkout';
     case 'active':
       return 'Active Loan';
     case 'pending_return':
@@ -854,6 +874,8 @@ function getEquipmentLoanColor(
   status: EquipmentLoanSyncInternalEvent['status'],
 ) {
   switch (status) {
+    case 'approved':
+      return 0x3b82f6;
     case 'active':
       return 0x22c55e;
     case 'pending_return':

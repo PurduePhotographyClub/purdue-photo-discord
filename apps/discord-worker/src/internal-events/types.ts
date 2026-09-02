@@ -191,7 +191,13 @@ export interface EquipmentLoanSyncInternalEvent {
   removeManagerDiscordIds?: string[];
   requestedAt: string;
   returnedAt?: string | null;
-  status: 'active' | 'pending' | 'pending_return' | 'rejected' | 'returned';
+  status:
+    | 'active'
+    | 'approved'
+    | 'pending'
+    | 'pending_return'
+    | 'rejected'
+    | 'returned';
   syncRevision: number;
   termsSnapshot?: string | null;
   type: 'website.equipment.loan.sync';

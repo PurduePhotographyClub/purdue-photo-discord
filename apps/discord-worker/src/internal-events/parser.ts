@@ -813,6 +813,7 @@ function parseEquipmentLoanSyncEvent(
 
   if (
     status !== 'active' &&
+    status !== 'approved' &&
     status !== 'pending' &&
     status !== 'pending_return' &&
     status !== 'rejected' &&
