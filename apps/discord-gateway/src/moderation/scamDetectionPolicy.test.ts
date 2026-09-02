@@ -13,6 +13,7 @@ const ESTABLISHED_MEMBER = NOW - 90 * 24 * 60 * 60 * 1_000;
 const CANON_R7_BODY_AND_LENS_GIVEAWAY = `Giving away my Canon EOS R7 Mirrorless Camera (Body Only), Hybrid Camera, 32.5 Megapixel (APS-C) CMOS Sensor, 4K Video, for Sports, Action, Content Creators, Vlogging Camera, Black
 Comes with extra lens
 DM me if interested`;
+const SONY_A7_III_GIVEAWAY = `If you are in need of a camera, I am offering my Sony A7 III with the Sony 18–105mm f/4 lens as a giveaway. Both items come in their original boxes and are in nearly brand-new condition. I purchased them in December 2024, used them only for a few test shots, and then stored them carefully. I am passing them on because I recently purchased a drone, and I would prefer to give this camera to someone who genuinely needs one but may not be able to afford it. This is strictly first come, first served. No holds or partial reservations. Please send me a direct message if you are interested.`;
 const REPEATED_CANON_UPGRADE_GIVEAWAY =
   'Just upgraded! Giving away my old Canon camera. It is still functional and in good shape. Perfect for photography enthusiasts or anyone wanting to start! DM me if interested in picking it up.';
 const BRUNO_TICKET_GIVEAWAY_CAMPAIGN =
@@ -612,6 +613,38 @@ test('quarantines the exact Canon R7 body-and-lens giveaway from an established 
   assert.equal(result.signalIds.includes('broadcast_mention'), false);
 });
 
+for (const { content, label, mentionsEveryone } of [
+  {
+    content: SONY_A7_III_GIVEAWAY,
+    label: 'direct post',
+    mentionsEveryone: false,
+  },
+  {
+    content: `@here ${SONY_A7_III_GIVEAWAY}`,
+    label: '@here broadcast',
+    mentionsEveryone: true,
+  },
+]) {
+  test(`quarantines the supplied Sony A7 III giveaway from an established member: ${label}`, () => {
+    const result = analyzeScamMessage({
+      accountCreatedTimestamp: OLD_ACCOUNT,
+      content,
+      joinedTimestamp: ESTABLISHED_MEMBER,
+      mentionsEveryone,
+      observedAtTimestamp: NOW,
+    });
+
+    assert.equal(result.isLikelyScam, true, label);
+    assert.equal(result.requiresReview, false, label);
+    assert.ok(result.signalIds.includes('camera_giveaway_fingerprint'), label);
+    assert.ok(result.signalIds.includes('direct_contact'), label);
+    assert.ok(result.signalIds.includes('giveaway_lure'), label);
+    assert.ok(result.signalIds.includes('high_value_item'), label);
+    assert.ok(result.signalIds.includes('urgency'), label);
+    assert.equal(result.signalIds.includes('ticket_bundle'), false, label);
+  });
+}
+
 for (const { content, label } of [
   {
     content: CANON_R7_BODY_AND_LENS_GIVEAWAY.replace(
@@ -1039,6 +1072,7 @@ test('keeps camera giveaway lookalikes and legitimate gear activity out of quara
     'Giving away my extra camera charger for free. PM me if interested.',
     'Free 64GB camera memory card after the meeting. Hit me up if you need one.',
     'The photography club is giving away a donated Canon EOS R7 through its documented annual member raffle. Enter on the official club website; the winner will be announced publicly, and staff will not request DMs.',
+    'The photography club is offering a donated Sony A7 III camera as a giveaway through its documented annual raffle. Enter on the official club website; staff will not request DMs.',
   ];
 
   for (const content of legitimateMessages) {
@@ -1144,6 +1178,43 @@ test('routes a simple established-member Nikon Z8 giveaway to review and uses ag
   assert.equal(established.requiresReview, true);
   assert.equal(newcomer.isLikelyScam, true);
   assert.equal(harmlessNewcomer.isLikelyScam, false);
+});
+
+test('treats a suspicious offer during a member first day as recently joined without flagging harmless posts', () => {
+  const suspiciousContent =
+    'Giving away a Nikon Z8 camera because I no longer need it. DM me if interested.';
+  const recentMember = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: suspiciousContent,
+    joinedTimestamp: NOW - DAY_MS + 1,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+  const establishedMember = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: suspiciousContent,
+    joinedTimestamp: NOW - DAY_MS,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+  const harmlessRecentMember = analyzeScamMessage({
+    accountCreatedTimestamp: OLD_ACCOUNT,
+    content: 'Hi everyone, I joined today and shoot with a Nikon Z8.',
+    joinedTimestamp: NOW - 12 * 60 * 60 * 1_000,
+    mentionsEveryone: false,
+    observedAtTimestamp: NOW,
+  });
+
+  assert.equal(recentMember.isLikelyScam, true);
+  assert.ok(recentMember.signalIds.includes('new_server_member'));
+  assert.equal(establishedMember.isLikelyScam, false);
+  assert.equal(establishedMember.requiresReview, true);
+  assert.equal(
+    establishedMember.signalIds.includes('new_server_member'),
+    false,
+  );
+  assert.equal(harmlessRecentMember.isLikelyScam, false);
+  assert.equal(harmlessRecentMember.requiresReview, false);
 });
 
 test('bounds normalization work for adversarial message content', () => {

@@ -16,6 +16,7 @@ const VERIFIED_ROLE_ID = '1503180707550199920';
 const ALERT_CHANNEL_ID = '1232870129000386620';
 const NOW = Date.UTC(2026, 7, 7, 22, 19, 0);
 const PUBLIC_ANNOUNCEMENT_COPY = '🚨 Likely scam removed. Nice try. 🤡';
+const SONY_A7_III_GIVEAWAY = `If you are in need of a camera, I am offering my Sony A7 III with the Sony 18–105mm f/4 lens as a giveaway. Both items come in their original boxes and are in nearly brand-new condition. I purchased them in December 2024, used them only for a few test shots, and then stored them carefully. I am passing them on because I recently purchased a drone, and I would prefer to give this camera to someone who genuinely needs one but may not be able to afford it. This is strictly first come, first served. No holds or partial reservations. Please send me a direct message if you are interested.`;
 const REPORTED_TICKET_TEMPLATE = `Is this a scam? Someone sent me this:
 
 I have 4 amazing tickets for the Bruno Mars concert on Wed, Sep 9, 2026 at 7:00 PM at Lucas Oil Stadium.
@@ -67,6 +68,24 @@ test('deletes the supplied scam, posts the generic public announcement, removes 
   assert.equal(PUBLIC_ANNOUNCEMENT_COPY.includes(message.content), false);
   assert.doesNotMatch(PUBLIC_ANNOUNCEMENT_COPY, /@(?:everyone|here)|<@/i);
   assert.deepEqual(result.failedActions, []);
+});
+
+test('deletes and sanctions the supplied Sony A7 III giveaway', async () => {
+  const calls: string[] = [];
+  const result = await createService().moderate(
+    createMessage({ content: SONY_A7_III_GIVEAWAY, mentionsEveryone: false }),
+    createActions(calls),
+  );
+
+  assert.equal(result.analysis?.isLikelyScam, true);
+  assert.equal(result.handled, true);
+  assert.deepEqual(calls, [
+    `delete:${CHANNEL_ID}:${MESSAGE_ID}`,
+    `remove:${GUILD_ID}:${USER_ID}:${VERIFIED_ROLE_ID}`,
+    `add:${GUILD_ID}:${USER_ID}:${SCAM_ROLE_ID}`,
+    `announce:${CHANNEL_ID}`,
+    `alert:${ALERT_CHANNEL_ID}:${MESSAGE_ID}`,
+  ]);
 });
 
 test('quarantines edited scams and deduplicates repeated events by message ID', async () => {
