@@ -49,7 +49,7 @@ interface DetectionContext extends ScamDetectionInput {
 const MAX_SCANNED_CONTENT_LENGTH = 4_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const NEW_ACCOUNT_AGE_MS = 7 * DAY_MS;
-const NEW_MEMBER_AGE_MS = 10 * 60 * 1_000;
+const NEW_MEMBER_AGE_MS = DAY_MS;
 
 const CONFUSABLES = new Map<string, string>([
   ['а', 'a'],
@@ -77,6 +77,8 @@ const CONFUSABLES = new Map<string, string>([
 
 const GIVEAWAY_PATTERN =
   /\b(?:give|giving|gave)(?:\s+[a-z0-9@+]+){0,6}\s+(?:away|out)\b|\b(?:(?:want|would\s+like|looking|willing)\s+to\s+give|donat(?:e|ing)|handing\s+out)\b|\b(?:for\s+free|free\s+of\s+charge|free\s+to\s+(?:(?:a\s+)?good\s+home|some(?:one|body)(?:\s+who\s+needs\s+it)?))\b|\b(?:at\s+)?no\s+cost\b|\bavailable\s+for\s+some(?:one|body)\s+who\s+needs\s+one\b|\bf\s*r\s*e\s*e\s+giveaway\b/u;
+const OFFER_AS_GIVEAWAY_PATTERN =
+  /\b(?:offer|offered|offering)(?:\s+[a-z0-9@+]+){1,24}\s+as\s+(?:an?\s+)?giveaway\b/u;
 const CAMERA_FREE_OFFER_PATTERN =
   /\bfree\s+(?:canon(?:\s+camera)?|camera|dslr|photography\s+equipment|camera\s+gear)\b/u;
 const INSTITUTIONAL_CAMERA_ACCESS_PATTERN =
@@ -111,9 +113,9 @@ const CAMERA_BODY_CAP_PATTERN = /\b(?:camera\s+)?body\s+cap\b/u;
 const CAMERA_UPGRADE_STORY_PATTERN =
   /\b(?:(?:just|recently)\s+)?upgrad(?:ed|ing)(?:\s+(?:my|the))?(?:\s+(?:camera|photography))?(?:\s+setup)?\b|\bupgraded\s+recently\b|\b(?:just\s+)?(?:bought|got|purchased)(?:\s+myself)?\s+a\s+(?:new|newer)\b|\b(?:new|newer)\s+model\b/u;
 const CAMERA_CONDITION_STORY_PATTERN =
-  /\b(?:still\s+)?(?:fully\s+)?functional\b|\b(?:still\s+)?works?\s+(?:perfectly|fine|great)\b|\b(?:great|good|excellent)\s+condition\b|\bin\s+(?:really\s+)?good\s+(?:condition|shape)\b|\beverything\s+works\b/u;
+  /\b(?:still\s+)?(?:fully\s+)?functional\b|\b(?:still\s+)?works?\s+(?:perfectly|fine|great)\b|\b(?:great|good|excellent)\s+condition\b|\b(?:in\s+)?(?:almost\s+|nearly\s+)?brand\s+new\s+(?:condition|shape)\b|\bin\s+(?:really\s+)?good\s+(?:condition|shape)\b|\beverything\s+works\b/u;
 const CAMERA_RECIPIENT_BAIT_PATTERN =
-  /\b(?:photography\s+(?:beginners?|students?|enthusiasts?)|interested\s+in\s+photography|wanting\s+to\s+(?:get\s+started|start\s+photography)|(?:start|starting|get\s+started|getting\s+into)\s+photography|starter\s+camera|perfect\s+for\s+beginners?|some(?:one|body)\s+who\s+(?:needs?\s+(?:one|it)|can\s+(?:use|make\s+use\s+of)\s+it)|some(?:one|body)\s+who\s+could\s+(?:use|make\s+use\s+of)\s+it)\b/u;
+  /\b(?:photography\s+(?:beginners?|students?|enthusiasts?)|interested\s+in\s+photography|wanting\s+to\s+(?:get\s+started|start\s+photography)|(?:start|starting|get\s+started|getting\s+into)\s+photography|starter\s+camera|perfect\s+for\s+beginners?|some(?:one|body)\s+who\s+(?:(?:genuinely|really|truly)\s+)?(?:needs?\s+(?:one|it)|can\s+(?:use|make\s+use\s+of)\s+it)|some(?:one|body)\s+who\s+could\s+(?:use|make\s+use\s+of)\s+it)\b/u;
 const CAMERA_RELINQUISHMENT_PATTERN =
   /\b(?:old|previous|extra)\s+(?:(?:canon|nikon|sony|fuji(?:film)?)\s+)?(?:camera|cam|dslr|one)\b|\b(?:old|previous)\s+(?:canon|nikon|sony|fuji(?:film)?)\b|\b(?:no\s+longer|don\s+t)\s+need\b|\bno\s+use\s+for\b|\bcollect\s+dust\b|\bsitting\s+around\b|\bhave\s+an?\s+extra\b|\bgiving\s+the\s+old\s+one\s+away\b/u;
 const CAMERA_AND_LENS_PATTERN =
@@ -353,6 +355,7 @@ function matchesKnownCameraGiveawayCampaign(normalizedContent: string) {
 function matchesGiveawayLure(normalizedContent: string) {
   return (
     GIVEAWAY_PATTERN.test(normalizedContent) ||
+    OFFER_AS_GIVEAWAY_PATTERN.test(normalizedContent) ||
     (CAMERA_FREE_OFFER_PATTERN.test(normalizedContent) &&
       !INSTITUTIONAL_CAMERA_ACCESS_PATTERN.test(normalizedContent))
   );
@@ -414,7 +417,21 @@ function matchesCameraDeviceOffer(normalizedContent: string) {
 function matchesCameraDeviceGiveawayOffer(normalizedContent: string) {
   return (
     matchesCameraDeviceOffer(normalizedContent) &&
-    CAMERA_DEVICE_GIVEAWAY_PATTERN.test(normalizedContent)
+    (CAMERA_DEVICE_GIVEAWAY_PATTERN.test(normalizedContent) ||
+      OFFER_AS_GIVEAWAY_PATTERN.test(normalizedContent))
+  );
+}
+
+function matchesTicketBundle(normalizedContent: string) {
+  if (!TICKET_BUNDLE_PATTERN.test(normalizedContent)) {
+    return false;
+  }
+
+  return (
+    TICKET_ITEM_PATTERN.test(normalizedContent) ||
+    (TICKET_TEMPLATE_EVENT_CONTEXT_PATTERN.test(normalizedContent) &&
+      TICKET_SALE_PATTERN.test(normalizedContent) &&
+      UNABLE_TO_ATTEND_PATTERN.test(normalizedContent))
   );
 }
 
@@ -500,8 +517,7 @@ const SIGNAL_RULES: readonly ScamSignalRule[] = [
   },
   {
     id: 'ticket_bundle',
-    matches: ({ normalizedContent }) =>
-      TICKET_BUNDLE_PATTERN.test(normalizedContent),
+    matches: ({ normalizedContent }) => matchesTicketBundle(normalizedContent),
     points: 2,
   },
   {
