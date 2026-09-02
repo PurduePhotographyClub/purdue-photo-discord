@@ -180,6 +180,49 @@ test('equipment rooms use the equipment requests channel and add both parties', 
   assertNoPermissionOverwriteRequests(requests);
 });
 
+test('approved PPC reservations create a pickup thread before barcode checkout', async () => {
+  const requests: RecordedRequest[] = [];
+  installThreadCreationFetchMock(requests, {
+    parentChannelId: EQUIPMENT_REQUESTS_CHANNEL_ID,
+    participantIds: ['borrower', 'equipment-manager'],
+    removedParticipantIds: ['former-equipment-manager'],
+    threadId: 'equipment-thread',
+  });
+  const approvedEvent: EquipmentLoanSyncInternalEvent = {
+    ...equipmentEvent(),
+    isPpcOwned: true,
+    lender: null,
+    status: 'approved',
+  };
+
+  const result = await syncEquipmentLoanChannel(
+    createEnv([{ status: 'approved', syncRevision: 1 }]),
+    approvedEvent,
+  );
+
+  assert.deepEqual(result, {
+    channelId: 'equipment-thread',
+    messageId: 'equipment-thread-message',
+  });
+  assertPrivateThreadCreation(requests, EQUIPMENT_REQUESTS_CHANNEL_ID);
+  assertThreadMemberAddedOnce(requests, 'equipment-thread', 'borrower');
+  assertThreadMemberAddedOnce(
+    requests,
+    'equipment-thread',
+    'equipment-manager',
+  );
+  const rootMessage = requests.find(
+    ({ method, pathname }) =>
+      method === 'POST' &&
+      pathname === '/api/v10/channels/equipment-thread/messages',
+  );
+  assert.match(JSON.stringify(rootMessage?.body), /Awaiting Checkout/);
+  assert.match(
+    JSON.stringify(rootMessage?.body),
+    /Scan the Code 128 asset tag/,
+  );
+});
+
 test('darkroom join, drop, and rejoin reuse a strongly matched thread when Discord omits owner_id', async () => {
   const requests: RecordedRequest[] = [];
   let threadName = 'darkroom--pcc-darkroom-darkroom-slot-r1';
