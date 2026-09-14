@@ -44,7 +44,7 @@
   "author": "Justin Beckwith <justin.beckwith@gmail.com>",
   "license": "MIT",
   "overrides": {
-    "sharp": "0.35.3",
+    "sharp": "0.35.4",
     "@pccbot/discord-gateway": {
       "discord.js": {
         "@discordjs/rest": {
@@ -68,6 +68,6 @@
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.69.0",
-    "wrangler": "^4.128.0"
+    "wrangler": "^4.131.1"
   }
 }
