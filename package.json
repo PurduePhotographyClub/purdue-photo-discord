@@ -59,15 +59,15 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260903.1",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.4.1",
-    "eslint": "^10.9.1",
+    "@types/node": "^26.5.1",
+    "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
     "globals": "^17.12.0",
     "prettier": "^3.9.6",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.69.0",
+    "typescript-eslint": "^8.70.0",
     "wrangler": "^4.131.1"
   }
 }
