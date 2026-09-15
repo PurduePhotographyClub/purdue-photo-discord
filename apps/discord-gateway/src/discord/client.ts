@@ -58,6 +58,7 @@ export interface DiscordGatewayHealthSnapshot {
   username?: string;
   forwarding: {
     botEvents: boolean;
+    competitionEvents: boolean;
     members: boolean;
     messageContent: boolean;
     messages: boolean;
@@ -153,7 +154,7 @@ export function createDiscordGatewayRunner(
     }
   });
 
-  if (config.forwardReactions) {
+  if (config.forwardReactions || config.forwardCompetitionEvents) {
     // Each listener serializes the discord.js object immediately so the
     // forwarder receives a stable, JSON-safe payload.
     client.on(Events.MessageReactionAdd, (reaction, user) => {
@@ -197,7 +198,7 @@ export function createDiscordGatewayRunner(
     });
   }
 
-  if (config.forwardMessages) {
+  if (config.forwardMessages || config.forwardCompetitionEvents) {
     // Message content is stripped later unless FORWARD_MESSAGE_CONTENT is true,
     // allowing message lifecycle events without requiring content storage.
     client.on(Events.MessageCreate, (message) => {
@@ -292,8 +293,10 @@ export function createDiscordGatewayRunner(
         discordWebSocketStatus: client.ws.status,
         forwarding: {
           botEvents: config.forwardBotEvents,
+          competitionEvents: config.forwardCompetitionEvents,
           members: config.forwardMembers,
-          messageContent: config.forwardMessageContent,
+          messageContent:
+            config.forwardMessageContent || config.forwardCompetitionEvents,
           messages: config.forwardMessages,
           reactions: config.forwardReactions,
         },
@@ -458,7 +461,9 @@ function serializeReaction(
 ): Record<string, unknown> {
   // Serialize only stable IDs and emoji details. Partial reactions can be sparse
   // after a gateway reconnect, so every optional field is guarded.
+  const context = readChannelContext(reaction.message.channel);
   return compactRecord({
+    ...context,
     channel_id: reaction.message.channelId,
     emoji: compactRecord({
       animated: reaction.emoji.animated ?? undefined,
@@ -483,20 +488,50 @@ function serializeMessage(
 ): Record<string, unknown> {
   // Message content is opt-in because it requires the privileged Discord intent
   // and is not needed for every workflow.
+  const context = readChannelContext(message.channel);
+  const shouldIncludeContent =
+    config.forwardMessageContent ||
+    (typeof context.category_id === 'string' &&
+      config.competitionCategoryIds.has(context.category_id));
   return compactRecord({
+    ...context,
+    attachments: [...message.attachments.values()]
+      .slice(0, 2)
+      .map((attachment) =>
+        compactRecord({
+          content_type: attachment.contentType ?? undefined,
+          filename: attachment.name,
+          id: attachment.id,
+          size: attachment.size,
+          url: attachment.url,
+        }),
+      ),
     author: message.author
       ? compactRecord({
           bot: message.author.bot,
+          global_name: message.author.globalName ?? undefined,
           id: message.author.id,
+          username: message.author.username,
         })
       : undefined,
     channel_id: message.channelId,
-    content: config.forwardMessageContent ? message.content : undefined,
+    content: shouldIncludeContent ? message.content : undefined,
     edited_timestamp: message.editedAt?.toISOString(),
     guild_id: message.guildId ?? undefined,
     id: message.id,
     timestamp: message.createdAt?.toISOString(),
     type: message.type,
+  });
+}
+
+function readChannelContext(
+  channel: Message['channel'],
+): Record<string, unknown> {
+  if (!channel.isThread()) return {};
+  return compactRecord({
+    category_id: channel.parent?.parentId ?? undefined,
+    parent_channel_id: channel.parentId ?? undefined,
+    thread_name: channel.name,
   });
 }
 

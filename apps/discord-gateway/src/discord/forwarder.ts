@@ -102,7 +102,7 @@ export class WorkerEventForwarder {
 
     // The booleans below are operational guardrails: the gateway may be granted
     // broad intents, but only explicitly enabled event families are forwarded.
-    if (!this.isEnabledEvent(eventType)) {
+    if (!this.isEnabledEvent(eventType, payload)) {
       return undefined;
     }
 
@@ -121,15 +121,18 @@ export class WorkerEventForwarder {
     };
   }
 
-  private isEnabledEvent(eventType: GatewayEventType): boolean {
+  private isEnabledEvent(
+    eventType: GatewayEventType,
+    payload: Record<string, unknown>,
+  ): boolean {
     // Keep the mapping between Discord event families and env flags in one
     // place so adding future events does not spread flag logic around.
     if (REACTION_EVENTS.has(eventType)) {
-      return this.config.forwardReactions;
+      return this.config.forwardReactions || this.isCompetitionEvent(payload);
     }
 
     if (MESSAGE_EVENTS.has(eventType)) {
-      return this.config.forwardMessages;
+      return this.config.forwardMessages || this.isCompetitionEvent(payload);
     }
 
     if (MEMBER_EVENTS.has(eventType)) {
@@ -139,11 +142,21 @@ export class WorkerEventForwarder {
     return false;
   }
 
+  private isCompetitionEvent(payload: Record<string, unknown>) {
+    const categoryId = readString(payload, 'category_id');
+    return (
+      this.config.forwardCompetitionEvents &&
+      Boolean(categoryId && this.config.competitionCategoryIds.has(categoryId))
+    );
+  }
+
   private matchesConfiguredFilters(payload: Record<string, unknown>): boolean {
     // Guild/channel filters are allowlists. Empty sets intentionally mean "let
     // all configured event families through."
     const guildId = readString(payload, 'guild_id');
     const channelId = readString(payload, 'channel_id');
+    const parentChannelId = readString(payload, 'parent_channel_id');
+    const categoryId = readString(payload, 'category_id');
 
     // Empty filter sets mean "all"; once configured, missing IDs should not slip
     // through because they cannot be proven to belong to the allowed scope.
@@ -156,7 +169,9 @@ export class WorkerEventForwarder {
 
     if (
       this.config.filters.channelIds.size > 0 &&
-      (!channelId || !this.config.filters.channelIds.has(channelId))
+      ![channelId, parentChannelId, categoryId].some((id) =>
+        Boolean(id && this.config.filters.channelIds.has(id)),
+      )
     ) {
       return false;
     }
@@ -230,9 +245,11 @@ function sanitizeGatewayPayload(
   if (REACTION_EVENTS.has(eventType)) {
     return compactRecord({
       channel_id: readString(payload, 'channel_id'),
+      category_id: readString(payload, 'category_id'),
       emoji: readEmoji(payload),
       guild_id: readString(payload, 'guild_id'),
       message_id: readString(payload, 'message_id'),
+      parent_channel_id: readString(payload, 'parent_channel_id'),
       user_id: readString(payload, 'user_id'),
     });
   }
@@ -246,17 +263,28 @@ function sanitizeGatewayPayload(
   }
 
   if (eventType === 'MESSAGE_CREATE' || eventType === 'MESSAGE_UPDATE') {
+    const categoryId = readString(payload, 'category_id');
+    const isCompetitionEvent = Boolean(
+      categoryId && config.competitionCategoryIds.has(categoryId),
+    );
     return compactRecord({
-      author: readAuthor(payload),
-      channel_id: readString(payload, 'channel_id'),
-      content: config.forwardMessageContent
-        ? readString(payload, 'content')
+      attachments: isCompetitionEvent
+        ? readAttachmentArray(payload)
         : undefined,
+      author: readAuthor(payload),
+      category_id: categoryId,
+      channel_id: readString(payload, 'channel_id'),
+      content:
+        config.forwardMessageContent || isCompetitionEvent
+          ? readString(payload, 'content')
+          : undefined,
       edited_timestamp: readString(payload, 'edited_timestamp'),
       guild_id: readString(payload, 'guild_id'),
       id: readString(payload, 'id'),
+      parent_channel_id: readString(payload, 'parent_channel_id'),
       timestamp: readString(payload, 'timestamp'),
       type: readNumber(payload, 'type'),
+      thread_name: readString(payload, 'thread_name'),
     });
   }
 
@@ -266,6 +294,23 @@ function sanitizeGatewayPayload(
     roles: readStringArray(payload, 'roles'),
     user: readUser(payload),
   });
+}
+
+function readAttachmentArray(payload: Record<string, unknown>) {
+  const attachments = payload.attachments;
+  if (!Array.isArray(attachments)) return undefined;
+  return attachments
+    .filter(isRecord)
+    .slice(0, 2)
+    .map((attachment) =>
+      compactRecord({
+        content_type: readString(attachment, 'content_type'),
+        filename: readString(attachment, 'filename'),
+        id: readString(attachment, 'id'),
+        size: readNumber(attachment, 'size'),
+        url: readString(attachment, 'url'),
+      }),
+    );
 }
 
 function isGatewayEventType(
@@ -332,8 +377,8 @@ function readEmojiName(payload: Record<string, unknown>): string | undefined {
 function readAuthor(
   payload: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  // The Worker currently only needs author identity and whether the author is a
-  // bot. Leave usernames/display names out unless a workflow actually needs it.
+  // Competition entries keep a display name for staff winner selection. The
+  // payload still excludes unrelated profile and member data.
   const author = readRecord(payload, 'author');
 
   if (!author) {
@@ -342,7 +387,9 @@ function readAuthor(
 
   return compactRecord({
     bot: readBoolean(author, 'bot'),
+    global_name: readString(author, 'global_name'),
     id: readString(author, 'id'),
+    username: readString(author, 'username'),
   });
 }
 

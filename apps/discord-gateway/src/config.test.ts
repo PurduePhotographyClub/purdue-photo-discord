@@ -9,13 +9,15 @@ const BASE_ENV = {
   WORKER_SECRET: 'test-worker-secret',
 };
 
-test('keeps message content unavailable when scam moderation is disabled', () => {
+test('enables scoped competition content forwarding by default', () => {
   const config = readGatewayConfig(BASE_ENV);
 
   assert.equal(config.scamModeration.enabled, false);
-  assert.equal(
-    config.intents.includes(GatewayIntentBits.MessageContent),
-    false,
+  assert.equal(config.intents.includes(GatewayIntentBits.MessageContent), true);
+  assert.equal(config.forwardCompetitionEvents, true);
+  assert.deepEqual(
+    config.competitionCategoryIds,
+    new Set(['1512508504081039482', '1549216426512883722']),
   );
 });
 
@@ -51,6 +53,7 @@ test('keeps message partials enabled for edited scam inspection without reaction
     ...BASE_ENV,
     DISCORD_GUILD_ID: '1182061172309106708',
     DISCORD_SCAM_ALERT_CHANNEL_ID: '1232870129000386620',
+    FORWARD_COMPETITION_EVENTS: 'false',
     FORWARD_REACTION_EVENTS: 'false',
     SCAM_MODERATION_ENABLED: 'true',
   });

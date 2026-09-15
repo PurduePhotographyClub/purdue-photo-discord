@@ -12,6 +12,7 @@ export interface GatewayConfig {
   activityType: number;
   discordToken: string;
   forwardBotEvents: boolean;
+  forwardCompetitionEvents: boolean;
   forwardMembers: boolean;
   forwardMessageContent: boolean;
   forwardMessages: boolean;
@@ -27,6 +28,7 @@ export interface GatewayConfig {
     channelIds: ReadonlySet<string>;
     guildIds: ReadonlySet<string>;
   };
+  competitionCategoryIds: ReadonlySet<string>;
 }
 
 export interface GatewayScamModerationConfig {
@@ -50,6 +52,10 @@ const DEFAULT_SCAM_RESTRICTED_ROLE_ID = '1515784633374212247';
 const DEFAULT_VERIFIED_ROLE_ID = '1503180707550199920';
 const DEFAULT_HONEYPOT_CHANNEL_ID = '1519110560925483008';
 const DEFAULT_SCAM_EXCLUDED_FORUM_CHANNEL_ID = '1519110699786305798';
+const DEFAULT_COMPETITION_CATEGORY_IDS = [
+  '1512508504081039482',
+  '1549216426512883722',
+] as const;
 const DEFAULT_PROTECTED_ROLE_IDS = [
   '1364457359061155870',
   '1198569577383198730',
@@ -70,6 +76,15 @@ export function readGatewayConfig(
     'FORWARD_MESSAGE_CONTENT',
     false,
   );
+  const forwardCompetitionEvents = readBoolean(
+    env,
+    'FORWARD_COMPETITION_EVENTS',
+    true,
+  );
+  const competitionCategoryIds = new Set<string>(
+    DEFAULT_COMPETITION_CATEGORY_IDS,
+  );
+  const configuredChannelIds = readStringSet(env, 'FORWARD_CHANNEL_IDS');
   const scamModeration = readScamModerationConfig(env);
   if (scamModeration.enabled && forwardMessageContent) {
     throw new Error(
@@ -82,11 +97,16 @@ export function readGatewayConfig(
     activityType:
       readOptionalInteger(env, 'DISCORD_ACTIVITY_TYPE') ?? ActivityType.Playing,
     discordToken: readRequiredString(env, 'DISCORD_TOKEN'),
+    competitionCategoryIds,
     filters: {
-      channelIds: readStringSet(env, 'FORWARD_CHANNEL_IDS'),
+      channelIds: new Set([
+        ...configuredChannelIds,
+        ...(forwardCompetitionEvents ? competitionCategoryIds : []),
+      ]),
       guildIds: readStringSet(env, 'FORWARD_GUILD_IDS'),
     },
     forwardBotEvents: readBoolean(env, 'FORWARD_BOT_EVENTS', false),
+    forwardCompetitionEvents,
     forwardMembers,
     forwardMessageContent,
     forwardMessages,
@@ -97,9 +117,11 @@ export function readGatewayConfig(
       forwardMessageContent,
       forwardMessages,
       forwardReactions,
+      forwardCompetitionEvents,
       scamModerationEnabled: scamModeration.enabled,
     }),
     partials: computePartials({
+      forwardCompetitionEvents,
       forwardReactions,
       scamModerationEnabled: scamModeration.enabled,
     }),
@@ -111,6 +133,7 @@ export function readGatewayConfig(
 }
 
 function computeGatewayIntents(options: {
+  forwardCompetitionEvents: boolean;
   forwardMembers: boolean;
   forwardMessageContent: boolean;
   forwardMessages: boolean;
@@ -121,14 +144,18 @@ function computeGatewayIntents(options: {
   // families that deployment config actually enables.
   const intents = new Set<GatewayIntentBits>([GatewayIntentBits.Guilds]);
 
-  if (options.forwardReactions) {
+  if (options.forwardReactions || options.forwardCompetitionEvents) {
     // Reaction payloads include message/channel context, so discord.js needs the
     // messages intent alongside the reaction intent.
     intents.add(GatewayIntentBits.GuildMessages);
     intents.add(GatewayIntentBits.GuildMessageReactions);
   }
 
-  if (options.forwardMessages || options.scamModerationEnabled) {
+  if (
+    options.forwardMessages ||
+    options.forwardCompetitionEvents ||
+    options.scamModerationEnabled
+  ) {
     intents.add(GatewayIntentBits.GuildMessages);
   }
 
@@ -138,6 +165,7 @@ function computeGatewayIntents(options: {
 
   if (
     (options.forwardMessages && options.forwardMessageContent) ||
+    options.forwardCompetitionEvents ||
     options.scamModerationEnabled
   ) {
     intents.add(GatewayIntentBits.MessageContent);
@@ -206,17 +234,24 @@ function readScamModerationConfig(
 }
 
 function computePartials(options: {
+  forwardCompetitionEvents: boolean;
   forwardReactions: boolean;
   scamModerationEnabled: boolean;
 }): Partials[] {
-  if (!options.forwardReactions && !options.scamModerationEnabled) {
+  if (
+    !options.forwardReactions &&
+    !options.forwardCompetitionEvents &&
+    !options.scamModerationEnabled
+  ) {
     return [];
   }
 
   return [
     Partials.Message,
     Partials.Channel,
-    ...(options.forwardReactions ? [Partials.Reaction, Partials.User] : []),
+    ...(options.forwardReactions || options.forwardCompetitionEvents
+      ? [Partials.Reaction, Partials.User]
+      : []),
   ];
 }
 

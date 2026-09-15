@@ -10,6 +10,7 @@ import { createLogger } from '../utils/logger';
 import { handlePhotographerRequestReaction } from './photographerRequestStatusService';
 import { addDiscordUnverifiedRole } from './discordMemberRoleService';
 import { handleDiscordHoneypotMessage } from './discordHoneypotService';
+import { handleCompetitionGatewayEvent } from './discordCompetitionGatewayService';
 
 export interface GatewayEventResult {
   handled: boolean;
@@ -31,6 +32,11 @@ export async function handleGatewayEvent(
     messageId: event.messageId,
     userId: event.userId,
   });
+
+  const competitionResult = await handleCompetitionGatewayEvent(event, env);
+  if (competitionResult.handled) {
+    return competitionResult;
+  }
 
   const photographerRequestResult = await handlePhotographerRequestReaction(
     event,
