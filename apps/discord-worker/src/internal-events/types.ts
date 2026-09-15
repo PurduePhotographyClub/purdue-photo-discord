@@ -31,6 +31,37 @@ export interface DiscordGuildStatsInternalEvent {
   type: 'website.discord.guild_stats';
 }
 
+export interface CompetitionSyncResult {
+  description: string;
+  discordUserId: string;
+  messageId: string;
+  place: 1 | 2 | 3;
+  threadId: string;
+  title: string;
+}
+
+export interface CompetitionDeleteInternalEvent {
+  forumChannelId: string;
+  type: 'website.competition.delete';
+}
+
+export interface CompetitionSyncInternalEvent {
+  competition: {
+    description: string | null;
+    forumChannelId: string | null;
+    id: string;
+    results: CompetitionSyncResult[];
+    status: 'closed' | 'draft' | 'judging' | 'open';
+    statusMessageId: string | null;
+    statusThreadId: string | null;
+    submissionDeadline: string | null;
+    syncRevision: number;
+    theme: string | null;
+    title: string;
+  };
+  type: 'website.competition.sync';
+}
+
 export interface DarkroomStatsRank {
   name: string;
   rolls: number;
@@ -281,6 +312,14 @@ export type MemberRolesInternalEvent =
   | DiscordWebsiteStaffRoleResolveInternalEvent;
 
 export type ParsedInternalEvent =
+  | {
+      event: CompetitionDeleteInternalEvent;
+      kind: 'competitionDelete';
+    }
+  | {
+      event: CompetitionSyncInternalEvent;
+      kind: 'competitionSync';
+    }
   | {
       event: GatewayInternalEvent;
       kind: 'gateway';

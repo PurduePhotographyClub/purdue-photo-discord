@@ -1,5 +1,7 @@
 export const DISCORD_CHANNEL_IDS = {
   darkroomStats: '1513248086275788980',
+  competitionActiveCategory: '1512508504081039482',
+  competitionArchiveCategory: '1549216426512883722',
   darkroomUserCountVoice: '1513247977706229891',
   honeypot: '1519110560925483008',
   honeypotSafe: '1524160150624010331',

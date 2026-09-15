@@ -37,6 +37,9 @@ import type {
   StudioScheduleMessageInternalEvent,
   StudioScheduleRequester,
   StudioScheduleSyncInternalEvent,
+  CompetitionDeleteInternalEvent,
+  CompetitionSyncInternalEvent,
+  CompetitionSyncResult,
 } from './types';
 
 const GATEWAY_EVENT_TYPES = new Set<GatewayEventType>([
@@ -58,6 +61,13 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
   }
 
   const type = readString(payload, 'type');
+
+  if (type === 'website.competition.delete') {
+    return {
+      event: parseCompetitionDeleteEvent(payload),
+      kind: 'competitionDelete',
+    };
+  }
 
   if (!type) {
     throw new BadRequestError('Internal event payload requires a type.');
@@ -85,6 +95,13 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
     return {
       event: { type },
       kind: 'guildStats',
+    };
+  }
+
+  if (type === 'website.competition.sync') {
+    return {
+      event: parseCompetitionSyncEvent(payload),
+      kind: 'competitionSync',
     };
   }
 
@@ -181,6 +198,116 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
     event: parseMessageEvent(payload, type),
     kind: 'message',
   };
+}
+
+function parseCompetitionDeleteEvent(
+  value: Record<string, unknown>,
+): CompetitionDeleteInternalEvent {
+  const forumChannelId = readString(value, 'forumChannelId');
+  if (!forumChannelId) {
+    throw new BadRequestError('Competition forumChannelId is required.');
+  }
+  assertDiscordSnowflake(forumChannelId, 'Competition forumChannelId');
+  return { forumChannelId, type: 'website.competition.delete' };
+}
+
+function parseCompetitionSyncEvent(
+  envelope: Record<string, unknown>,
+): CompetitionSyncInternalEvent {
+  const value = envelope.competition;
+  if (!isRecord(value)) {
+    throw new BadRequestError('Competition sync payload is required.');
+  }
+  const id = readString(value, 'id');
+  const title = readString(value, 'title');
+  const status = readString(value, 'status');
+  const syncRevision = readNonNegativeInteger(value, 'syncRevision');
+  if (!id || !isUuid(id))
+    throw new BadRequestError('Competition ID must be a UUID.');
+  if (!title || title.length > 160)
+    throw new BadRequestError('Competition title is invalid.');
+  if (!status || !['draft', 'open', 'judging', 'closed'].includes(status)) {
+    throw new BadRequestError('Competition status is invalid.');
+  }
+  if (syncRevision === null)
+    throw new BadRequestError('Competition sync revision is invalid.');
+
+  const forumChannelId = readNullableString(value, 'forumChannelId') ?? null;
+  const statusThreadId = readNullableString(value, 'statusThreadId') ?? null;
+  const statusMessageId = readNullableString(value, 'statusMessageId') ?? null;
+  assertOptionalDiscordSnowflake(forumChannelId, 'Competition forumChannelId');
+  assertOptionalDiscordSnowflake(statusThreadId, 'Competition statusThreadId');
+  assertOptionalDiscordSnowflake(
+    statusMessageId,
+    'Competition statusMessageId',
+  );
+
+  const rawResults = value.results;
+  if (!Array.isArray(rawResults) || rawResults.length > 3) {
+    throw new BadRequestError(
+      'Competition results must be an array of up to three items.',
+    );
+  }
+  const results = rawResults.map((result) => parseCompetitionResult(result));
+  if (
+    status === 'closed' &&
+    new Set(results.map((result) => result.place)).size !== 3
+  ) {
+    throw new BadRequestError(
+      'Ended competitions require first, second, and third place.',
+    );
+  }
+
+  const description = readNullableString(value, 'description') ?? null;
+  const theme = readNullableString(value, 'theme') ?? null;
+  const submissionDeadline =
+    readNullableString(value, 'submissionDeadline') ?? null;
+  if (description && description.length > 1_200)
+    throw new BadRequestError('Competition description is too long.');
+  if (theme && theme.length > 160)
+    throw new BadRequestError('Competition theme is too long.');
+  if (submissionDeadline && !/^\d{4}-\d{2}-\d{2}$/.test(submissionDeadline)) {
+    throw new BadRequestError('Competition deadline is invalid.');
+  }
+
+  return {
+    competition: {
+      description,
+      forumChannelId,
+      id,
+      results,
+      status: status as CompetitionSyncInternalEvent['competition']['status'],
+      statusMessageId,
+      statusThreadId,
+      submissionDeadline,
+      syncRevision,
+      theme,
+      title,
+    },
+    type: 'website.competition.sync',
+  };
+}
+
+function parseCompetitionResult(value: unknown): CompetitionSyncResult {
+  if (!isRecord(value))
+    throw new BadRequestError('Competition result is invalid.');
+  const place = readNonNegativeInteger(value, 'place');
+  const discordUserId = readString(value, 'discordUserId');
+  const threadId = readString(value, 'threadId');
+  const messageId = readString(value, 'messageId');
+  const title = readString(value, 'title');
+  const description = readString(value, 'description') ?? '';
+  if (place !== 1 && place !== 2 && place !== 3)
+    throw new BadRequestError('Competition place is invalid.');
+  if (!discordUserId || !threadId || !messageId)
+    throw new BadRequestError('Competition result Discord IDs are required.');
+  assertDiscordSnowflake(discordUserId, 'Competition result discordUserId');
+  assertDiscordSnowflake(threadId, 'Competition result threadId');
+  assertDiscordSnowflake(messageId, 'Competition result messageId');
+  if (!title || title.length > 100 || description.length > 240) {
+    throw new BadRequestError('Competition result text is invalid.');
+  }
+  return { description, discordUserId, messageId, place, threadId, title };
 }
 
 function parsePhotographerRequestExpirySweepEvent(

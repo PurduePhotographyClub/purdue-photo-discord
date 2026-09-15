@@ -38,6 +38,10 @@ import { handleGatewayEvent } from '../services/gatewayEventService';
 import { sweepExpiredPhotographerRequests } from '../services/photographerRequestStatusService';
 import { syncMemberReportProjection } from '../services/discordMemberReportService';
 import { expireDiscordEventCarpool } from '../services/discordEventCarpoolService';
+import {
+  deleteDiscordCompetition,
+  syncDiscordCompetition,
+} from '../services/discordCompetitionService';
 import type { Env } from '../discord/types';
 import { createLogger } from '../utils/logger';
 import { PHOTOGRAPHER_REQUEST_CHANNEL_IDS } from '../config/discord-channel-ids';
@@ -59,6 +63,10 @@ export async function dispatchInternalEvent(
   context?: ExecutionContext,
 ): Promise<Record<string, unknown>> {
   switch (parsedEvent.kind) {
+    case 'competitionDelete':
+      return handleCompetitionDeleteEvent(parsedEvent.event, env);
+    case 'competitionSync':
+      return handleCompetitionSyncEvent(parsedEvent.event, env);
     case 'gateway':
       return handleGatewayInternalEvent(parsedEvent.event, env);
     case 'guildStats':
@@ -92,6 +100,22 @@ export async function dispatchInternalEvent(
     case 'message':
       return handleMessageEvent(parsedEvent.event, env);
   }
+}
+
+async function handleCompetitionDeleteEvent(
+  event: Extract<ParsedInternalEvent, { kind: 'competitionDelete' }>['event'],
+  env: Env,
+): Promise<Record<string, unknown>> {
+  await deleteDiscordCompetition(env, event.forumChannelId);
+  return { ok: true, type: event.type };
+}
+
+async function handleCompetitionSyncEvent(
+  event: Extract<ParsedInternalEvent, { kind: 'competitionSync' }>['event'],
+  env: Env,
+): Promise<Record<string, unknown>> {
+  const result = await syncDiscordCompetition(env, event);
+  return { ...result, ok: true, type: event.type };
 }
 
 async function handleMemberReportEvent(
