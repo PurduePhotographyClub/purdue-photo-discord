@@ -340,6 +340,31 @@ function parseCompetitionEntry(value: unknown): CompetitionSyncEntry {
       'Competition entries must target their forum starter message.',
     );
   }
+  const description = readNullableString(value, 'description');
+  const discordUserId = readString(value, 'discordUserId');
+  const title = readString(value, 'title');
+  const hasWinnerMetadata =
+    value.description !== undefined ||
+    value.discordUserId !== undefined ||
+    value.title !== undefined;
+  if (hasWinnerMetadata) {
+    if (!discordUserId || !title) {
+      throw new BadRequestError(
+        'Competition entry winner metadata is incomplete.',
+      );
+    }
+    assertDiscordSnowflake(discordUserId, 'Competition entry discordUserId');
+    if (title.length > 100 || (description?.length ?? 0) > 240) {
+      throw new BadRequestError('Competition entry text is invalid.');
+    }
+    return {
+      description: description ?? '',
+      discordUserId,
+      messageId,
+      threadId,
+      title,
+    };
+  }
   return { messageId, threadId };
 }
 

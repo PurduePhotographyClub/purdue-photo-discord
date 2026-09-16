@@ -9,11 +9,17 @@ import { getRequiredEnv } from '../utils/env';
 import type {
   CompetitionArchiveInternalEvent,
   CompetitionSyncInternalEvent,
+  CompetitionSyncResult,
 } from '../internal-events/types';
 import { DiscordApiError } from '../utils/errors';
 import type { DiscordEmbed } from '@pccbot/shared';
 
 type CompetitionProjection = CompetitionSyncInternalEvent['competition'];
+type CompetitionEntry = CompetitionProjection['entries'][number];
+type RankableCompetitionEntry = CompetitionEntry & {
+  discordUserId: string;
+  title: string;
+};
 
 interface DiscordPermissionOverwrite {
   allow: string;
@@ -36,7 +42,9 @@ interface DiscordChannel {
 
 interface DiscordMessage {
   reactions?: Array<{
+    count?: number;
     emoji?: { id?: string | null; name?: string | null };
+    me?: boolean;
   }>;
 }
 
@@ -85,7 +93,7 @@ export async function syncDiscordCompetition(
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
   const botUserId = getRequiredEnv(env, 'DISCORD_APPLICATION_ID');
   const baseMarker = `pcc-competition:${projection.id}`;
-  const marker = `${baseMarker};revision:${projection.syncRevision}`;
+  const revisionMarker = `${baseMarker};revision:${projection.syncRevision}`;
   let forum = await findCompetitionForum(env, guildId, projection, baseMarker);
   const activePermissionOverwrites =
     projection.status === 'closed'
@@ -106,7 +114,7 @@ export async function syncDiscordCompetition(
           name: normalizeCompetitionForumName(projection.title),
           parent_id: DISCORD_CHANNEL_IDS.competitionActiveCategory,
           permission_overwrites: activePermissionOverwrites,
-          topic: marker,
+          topic: revisionMarker,
           type: FORUM_CHANNEL_TYPE,
         }),
         method: 'POST',
@@ -117,6 +125,23 @@ export async function syncDiscordCompetition(
   if (existingRevision > projection.syncRevision) {
     throw new Error('Stale competition sync ignored.');
   }
+  const completedProjection =
+    projection.status === 'closed' && projection.results.length === 0
+      ? {
+          ...projection,
+          results:
+            readPersistedCompetitionResults(forum.topic, projection.entries) ??
+            (await rankCompetitionEntriesFromDiscord(env, projection)),
+        }
+      : projection;
+  const marker =
+    completedProjection.status === 'closed'
+      ? buildClosedCompetitionMarker(
+          baseMarker,
+          completedProjection.syncRevision,
+          completedProjection.results,
+        )
+      : revisionMarker;
   const forumPermissionOverwrites =
     projection.status === 'closed'
       ? buildReadOnlyOverwrites(
@@ -139,14 +164,14 @@ export async function syncDiscordCompetition(
     env,
     guildId,
     competitionForum.id,
-    projection,
+    completedProjection,
   );
 
-  if (projection.status !== 'draft') {
+  if (completedProjection.status !== 'draft') {
     await reconcileCompetitionEntryReactions(
       env,
       competitionForum.id,
-      projection,
+      completedProjection,
     );
   }
 
@@ -155,6 +180,111 @@ export async function syncDiscordCompetition(
     statusMessageId: status.messageId,
     statusThreadId: status.threadId,
   };
+}
+
+function buildClosedCompetitionMarker(
+  baseMarker: string,
+  syncRevision: number,
+  results: CompetitionSyncResult[],
+) {
+  const winnerIds = results.map((result) => result.threadId).join(',');
+  return `${baseMarker};winners:${winnerIds || 'none'};revision:${syncRevision}`;
+}
+
+export function readPersistedCompetitionResults(
+  topic: string | null | undefined,
+  entries: CompetitionEntry[],
+): CompetitionSyncResult[] | null {
+  const winnerMatch = /;winners:([^;]+);revision:\d+$/.exec(topic ?? '');
+  if (!winnerMatch) return null;
+  if (winnerMatch[1] === 'none') return [];
+
+  const winnerIds = winnerMatch[1]?.split(',') ?? [];
+  if (
+    winnerIds.length === 0 ||
+    winnerIds.length > 3 ||
+    new Set(winnerIds).size !== winnerIds.length
+  ) {
+    return null;
+  }
+
+  const entriesByThread = new Map(
+    entries.map((entry) => [entry.threadId, entry]),
+  );
+  const results: CompetitionSyncResult[] = [];
+  for (const [index, threadId] of winnerIds.entries()) {
+    const entry = entriesByThread.get(threadId);
+    if (!entry?.discordUserId || !entry.title) return null;
+    results.push({
+      description: entry.description ?? '',
+      discordUserId: entry.discordUserId,
+      messageId: entry.messageId,
+      place: (index + 1) as 1 | 2 | 3,
+      threadId: entry.threadId,
+      title: entry.title,
+    });
+  }
+  return results;
+}
+
+async function rankCompetitionEntriesFromDiscord(
+  env: Env,
+  projection: CompetitionProjection,
+) {
+  const entriesWithVotes = [];
+  for (const [index, entry] of projection.entries.entries()) {
+    const { discordUserId, title } = entry;
+    if (!discordUserId || !title) continue;
+    const message = await tryCompetitionDiscordRequest<DiscordMessage>(
+      env,
+      `/channels/${entry.threadId}/messages/${entry.messageId}`,
+    );
+    if (!message) continue;
+    const voteReaction = message.reactions?.find((reaction) => {
+      const emoji = formatDiscordReactionEmoji(reaction.emoji);
+      return emoji ? isCompetitionVoteEmoji(emoji) : false;
+    });
+    const totalReactions = Number.isSafeInteger(voteReaction?.count)
+      ? Math.max(0, voteReaction?.count ?? 0)
+      : 0;
+    const votes = Math.max(
+      0,
+      totalReactions - (voteReaction?.me === true ? 1 : 0),
+    );
+    if (votes === 0) continue;
+    entriesWithVotes.push({
+      entry: { ...entry, discordUserId, title },
+      index,
+      votes,
+    });
+  }
+
+  return rankCompetitionEntriesByVotes(entriesWithVotes);
+}
+
+export function rankCompetitionEntriesByVotes(
+  entriesWithVotes: Array<{
+    entry: RankableCompetitionEntry;
+    index: number;
+    votes: number;
+  }>,
+): CompetitionSyncResult[] {
+  return entriesWithVotes
+    .filter(({ votes }) => Number.isSafeInteger(votes) && votes > 0)
+    .slice()
+    .sort(
+      (first, second) =>
+        second.votes - first.votes || first.index - second.index,
+    )
+    .slice(0, 3)
+    .map(({ entry }, index) => ({
+      description: entry.description ?? '',
+      discordUserId: entry.discordUserId,
+      messageId: entry.messageId,
+      place: (index + 1) as 1 | 2 | 3,
+      threadId: entry.threadId,
+      title: entry.title,
+    }));
 }
 
 export function buildCompetitionStatusMessage(
