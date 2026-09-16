@@ -250,14 +250,6 @@ function parseCompetitionSyncEvent(
     );
   }
   const results = rawResults.map((result) => parseCompetitionResult(result));
-  if (
-    status === 'closed' &&
-    new Set(results.map((result) => result.place)).size !== 3
-  ) {
-    throw new BadRequestError(
-      'Ended competitions require first, second, and third place.',
-    );
-  }
 
   const rawEntries = value.entries ?? [];
   if (!Array.isArray(rawEntries) || rawEntries.length > 100) {
