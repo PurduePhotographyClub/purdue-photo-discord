@@ -8,6 +8,7 @@ import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import { getRequiredEnv } from '../utils/env';
 import type { CompetitionSyncInternalEvent } from '../internal-events/types';
 import { DiscordApiError } from '../utils/errors';
+import type { DiscordEmbed } from '@pccbot/shared';
 
 type CompetitionProjection = CompetitionSyncInternalEvent['competition'];
 
@@ -154,51 +155,110 @@ export async function syncDiscordCompetition(
   };
 }
 
-export function buildCompetitionStatusContent(
+export function buildCompetitionStatusMessage(
   projection: CompetitionProjection,
+  guildId: string,
 ) {
-  const state = {
-    closed: 'Ended',
-    draft: 'Draft',
-    judging: 'Voting',
-    open: 'Open for entries',
+  const presentation = {
+    closed: {
+      color: 0x737373,
+      description: 'This competition has ended.',
+      status: '🏁 Ended',
+    },
+    draft: {
+      color: 0x737373,
+      description: 'This competition is being prepared.',
+      status: '🛠️ Draft',
+    },
+    judging: {
+      color: 0xf2c94c,
+      description: `Voting is open. React with ${COMPETITION_VOTE_EMOJI} on an entry post to vote.`,
+      status: '🗳️ Voting open',
+    },
+    open: {
+      color: 0x57d68d,
+      description: 'Entries are open. Create one post in this forum to enter.',
+      status: '🟢 Open for entries',
+    },
   }[projection.status];
   const deadline = projection.submissionDeadline
     ? formatDiscordDeadline(projection.submissionDeadline)
     : 'Not set';
-  const lines = [
-    `**${escapeDiscordText(projection.title)}**`,
-    `Status: ${state}`,
-    `Deadline: ${deadline}`,
+  const fields: NonNullable<DiscordEmbed['fields']> = [
+    { inline: true, name: 'Status', value: presentation.status },
+    { inline: true, name: 'Entry deadline', value: deadline },
     ...(projection.theme
-      ? [`Theme: ${escapeDiscordText(projection.theme)}`]
+      ? [
+          {
+            inline: true,
+            name: 'Theme',
+            value: escapeDiscordText(projection.theme),
+          },
+        ]
       : []),
-    '',
-    'One entry per person.',
-    'Use the photo title as the post title.',
-    'Write one short line about the image.',
-    'Attach exactly one image.',
   ];
 
-  if (projection.status === 'judging') {
-    lines.push(
-      '',
-      `Voting is open. Use ${COMPETITION_VOTE_EMOJI} on an entry post to vote.`,
-    );
+  if (projection.status === 'open') {
+    fields.push({
+      name: 'How to enter',
+      value: [
+        '• One entry per person.',
+        '• Use the photo title as the post title.',
+        '• Write one short line about the image.',
+        '• Attach exactly one image.',
+      ].join('\n'),
+    });
   }
-  if (projection.status === 'closed' && projection.results.length > 0) {
-    const guildId = '1182061172309106708';
-    lines.push('', '**Results**');
-    for (const result of [...projection.results].sort(
-      (a, b) => a.place - b.place,
-    )) {
-      lines.push(
-        `${PLACEMENT_EMOJI[result.place] ?? `${result.place}.`} ${escapeDiscordText(result.title)} — https://discord.com/channels/${guildId}/${result.threadId}/${result.messageId}`,
-      );
-    }
+  if (projection.status === 'judging') {
+    fields.push({
+      name: 'How to vote',
+      value: `React with ${COMPETITION_VOTE_EMOJI} on any entry post you want to support.`,
+    });
+  }
+  if (projection.status === 'closed') {
+    fields.push({
+      name: 'Results',
+      value: formatCompetitionResults(projection, guildId),
+    });
   }
 
-  return lines.join('\n').slice(0, 2_000);
+  const embed: DiscordEmbed = {
+    color: presentation.color,
+    description: [
+      presentation.description,
+      projection.description
+        ? `> ${escapeDiscordText(projection.description)}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    fields,
+    footer: { text: 'Purdue Photography Club · Photo competition' },
+    title: `📷 ${escapeDiscordText(projection.title)}`,
+  };
+
+  return {
+    allowed_mentions: { parse: [] as string[] },
+    content: '',
+    embeds: [embed],
+  };
+}
+
+function formatCompetitionResults(
+  projection: CompetitionProjection,
+  guildId: string,
+) {
+  if (projection.results.length === 0) {
+    return 'No results were published for this competition.';
+  }
+
+  return [...projection.results]
+    .sort((a, b) => a.place - b.place)
+    .map(
+      (result) =>
+        `${PLACEMENT_EMOJI[result.place] ?? `${result.place}.`} [${escapeDiscordText(result.title)}](https://discord.com/channels/${guildId}/${result.threadId}/${result.messageId})`,
+    )
+    .join('\n');
 }
 
 export function normalizeCompetitionForumName(title: string) {
@@ -232,14 +292,18 @@ export function buildActiveCompetitionForumOverwrites(
   status: 'draft' | 'judging' | 'open',
   botUserId?: string,
 ): DiscordPermissionOverwrite[] {
+  const memberAllow =
+    status === 'open'
+      ? SEND_MESSAGES_PERMISSION
+      : status === 'judging'
+        ? ADD_REACTIONS_PERMISSION
+        : 0n;
   return buildCompetitionPermissionOverwrites(
     overwrites,
     guildId,
     botUserId,
-    status === 'open' ? SEND_MESSAGES_PERMISSION : 0n,
-    status === 'open'
-      ? WRITE_AND_REACTION_PERMISSIONS & ~SEND_MESSAGES_PERMISSION
-      : WRITE_AND_REACTION_PERMISSIONS,
+    memberAllow,
+    WRITE_AND_REACTION_PERMISSIONS & ~memberAllow,
   );
 }
 
@@ -424,10 +488,7 @@ async function upsertCompetitionStatusPost(
   forumChannelId: string,
   projection: CompetitionProjection,
 ) {
-  const message = {
-    allowed_mentions: { parse: [] },
-    content: buildCompetitionStatusContent(projection),
-  };
+  const message = buildCompetitionStatusMessage(projection, guildId);
   if (projection.statusThreadId && projection.statusMessageId) {
     await competitionDiscordRequest(
       env,

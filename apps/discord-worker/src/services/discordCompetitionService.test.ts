@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildActiveCompetitionForumOverwrites,
-  buildCompetitionStatusContent,
+  buildCompetitionStatusMessage,
   buildReadOnlyOverwrites,
   COMPETITION_VOTE_EMOJI,
   normalizeCompetitionForumName,
@@ -14,26 +14,68 @@ import type { Env } from '../discord/types';
 import type { GatewayInternalEvent } from '@pccbot/shared';
 import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 
-test('competition status post includes state, deadline, and the entry template', () => {
-  const content = buildCompetitionStatusContent({
-    description: null,
-    entries: [],
-    forumChannelId: null,
-    id: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
-    results: [],
-    status: 'open',
-    statusMessageId: null,
-    statusThreadId: null,
-    submissionDeadline: '2026-09-30',
-    syncRevision: 1,
-    theme: 'Reflections',
-    title: 'September Competition',
-  });
+test('competition status post uses a structured entry announcement', () => {
+  const message = buildCompetitionStatusMessage(
+    {
+      description: null,
+      entries: [],
+      forumChannelId: null,
+      id: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      results: [],
+      status: 'open',
+      statusMessageId: null,
+      statusThreadId: null,
+      submissionDeadline: '2026-09-30',
+      syncRevision: 1,
+      theme: 'Reflections',
+      title: 'September Competition',
+    },
+    '1182061172309106708',
+  );
 
-  assert.match(content, /Status: Open for entries/);
-  assert.match(content, /Deadline: September 30, 2026/);
-  assert.match(content, /One entry per person/);
-  assert.match(content, /Attach exactly one image/);
+  assert.equal(message.content, '');
+  assert.equal(message.embeds.length, 1);
+  assert.equal(message.embeds[0]?.title, '📷 September Competition');
+  assert.deepEqual(
+    message.embeds[0]?.fields?.map((field) => field.name),
+    ['Status', 'Entry deadline', 'Theme', 'How to enter'],
+  );
+  assert.match(message.embeds[0]?.description ?? '', /Entries are open/);
+  assert.match(
+    message.embeds[0]?.fields?.at(-1)?.value ?? '',
+    /One entry per person/,
+  );
+  assert.match(
+    message.embeds[0]?.fields?.at(-1)?.value ?? '',
+    /Attach exactly one image/,
+  );
+});
+
+test('voting announcement makes the heart reaction the primary instruction', () => {
+  const message = buildCompetitionStatusMessage(
+    {
+      description: 'Photos made after sunset.',
+      entries: [],
+      forumChannelId: '323456789012345678',
+      id: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      results: [],
+      status: 'judging',
+      statusMessageId: '523456789012345678',
+      statusThreadId: '623456789012345678',
+      submissionDeadline: '2026-09-30',
+      syncRevision: 2,
+      theme: 'After dark',
+      title: 'September Competition',
+    },
+    '1182061172309106708',
+  );
+
+  assert.match(message.embeds[0]?.description ?? '', /Voting is open/);
+  assert.equal(message.embeds[0]?.fields?.at(-1)?.name, 'How to vote');
+  assert.match(
+    message.embeds[0]?.fields?.at(-1)?.value ?? '',
+    new RegExp(COMPETITION_VOTE_EMOJI),
+  );
 });
 
 test('forum names are Discord-safe and bounded', () => {
@@ -69,8 +111,8 @@ test('active forum permissions match the competition lifecycle', () => {
     },
     {
       allow: String(64n | 2_048n | 274_877_906_944n),
-      deny: '0',
-      id: 'member-role',
+      deny: String(64n | 2_048n),
+      id: 'restricted-role',
       type: 0,
     },
     { allow: '0', deny: '0', id: DISCORD_ROLE_IDS.admin, type: 0 },
@@ -87,6 +129,8 @@ test('active forum permissions match the competition lifecycle', () => {
   assert.notEqual(BigInt(openEveryone.deny) & 64n, 0n);
   assert.notEqual(BigInt(openEveryone.deny) & 274_877_906_944n, 0n);
   assert.equal(BigInt(open[1]!.allow) & (64n | 2_048n | 274_877_906_944n), 0n);
+  assert.notEqual(BigInt(open[1]!.deny) & 64n, 0n);
+  assert.notEqual(BigInt(open[1]!.deny) & 2_048n, 0n);
   assert.notEqual(BigInt(open[2]!.allow) & 274_877_906_944n, 0n);
 
   const judging = buildActiveCompetitionForumOverwrites(
@@ -95,13 +139,16 @@ test('active forum permissions match the competition lifecycle', () => {
     'judging',
   );
   const judgingEveryone = judging[0]!;
-  assert.notEqual(BigInt(judgingEveryone.deny) & 64n, 0n);
+  assert.notEqual(BigInt(judgingEveryone.allow) & 64n, 0n);
+  assert.equal(BigInt(judgingEveryone.deny) & 64n, 0n);
   assert.notEqual(BigInt(judgingEveryone.deny) & 2_048n, 0n);
   assert.notEqual(BigInt(judgingEveryone.deny) & 274_877_906_944n, 0n);
   assert.equal(
     BigInt(judging[1]!.allow) & (64n | 2_048n | 274_877_906_944n),
     0n,
   );
+  assert.notEqual(BigInt(judging[1]!.deny) & 64n, 0n);
+  assert.notEqual(BigInt(judging[1]!.deny) & 2_048n, 0n);
   assert.notEqual(BigInt(judging[2]!.allow) & 274_877_906_944n, 0n);
 
   const draft = buildActiveCompetitionForumOverwrites(
@@ -220,7 +267,7 @@ test('open sync clears accepted entry reactions and survives repeated Discord 42
   }
 });
 
-test('competition sync parsing requires all three places before ending', () => {
+test('competition sync parsing allows ending before results are published', () => {
   const base = {
     competition: {
       description: null,
@@ -237,7 +284,7 @@ test('competition sync parsing requires all three places before ending', () => {
     },
     type: 'website.competition.sync',
   };
-  assert.throws(() => parseInternalEvent(base), /first, second, and third/);
+  assert.doesNotThrow(() => parseInternalEvent(base));
 });
 
 test('competition sync parsing validates accepted entry Discord IDs', () => {
