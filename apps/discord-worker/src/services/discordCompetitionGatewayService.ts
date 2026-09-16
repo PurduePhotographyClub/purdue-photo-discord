@@ -11,6 +11,7 @@ interface CompetitionPolicy {
   found?: boolean;
   isEntry?: boolean;
   status?: string;
+  existingEntry?: { messageId: string; threadId: string } | null;
 }
 
 interface DiscordAttachment {
@@ -54,13 +55,19 @@ async function handleCompetitionEntryCreate(
   categoryId: string,
   forumChannelId: string,
 ) {
-  const policy = await getForumPolicy(env, forumChannelId);
+  const policy = await getForumPolicy(env, forumChannelId, event.userId);
   if (!policy.found) return { handled: false };
 
   const threadId = event.channelId;
   const messageId = event.messageId;
   const userId = event.userId;
   if (!threadId || !messageId || !userId || messageId !== threadId) {
+    return { handled: true };
+  }
+  if (
+    policy.existingEntry?.threadId === threadId &&
+    policy.existingEntry.messageId === messageId
+  ) {
     return { handled: true };
   }
 
@@ -85,6 +92,23 @@ async function handleCompetitionEntryCreate(
       threadId,
       userId,
       'Competition entries need a photo title, one short description line, and exactly one image while entries are open.',
+    );
+    return { handled: true };
+  }
+
+  if (
+    policy.existingEntry &&
+    !(await releaseDeletedCompetitionEntry(
+      env,
+      forumChannelId,
+      policy.existingEntry,
+    ))
+  ) {
+    await rejectCompetitionThread(
+      env,
+      threadId,
+      userId,
+      'You already have an entry in this competition. Delete that post before submitting a replacement while entries are open.',
     );
     return { handled: true };
   }
@@ -167,10 +191,47 @@ async function handleCompetitionReaction(
   return { handled: true };
 }
 
-async function getForumPolicy(env: Env, forumChannelId: string) {
+async function releaseDeletedCompetitionEntry(
+  env: Env,
+  forumChannelId: string,
+  entry: { messageId: string; threadId: string },
+) {
+  try {
+    await discordApiRequest(
+      env,
+      `/channels/${entry.threadId}/messages/${entry.messageId}`,
+    );
+    return false;
+  } catch (error) {
+    if (!(error instanceof DiscordApiError) || error.status !== 404)
+      throw error;
+  }
+  const result = await requestWebsiteApi(
+    env,
+    '/api/competitions/discord-entries',
+    {
+      body: {
+        forumChannelId,
+        messageId: entry.messageId,
+        threadId: entry.threadId,
+      },
+      method: 'DELETE',
+    },
+  );
+  return isRecord(result) && result.deleted === true;
+}
+
+async function getForumPolicy(
+  env: Env,
+  forumChannelId: string,
+  discordUserId?: string,
+) {
+  const userQuery = discordUserId
+    ? `&discordUserId=${encodeURIComponent(discordUserId)}`
+    : '';
   return requestWebsiteApi(
     env,
-    `/api/competitions/discord-policy?forumChannelId=${encodeURIComponent(forumChannelId)}`,
+    `/api/competitions/discord-policy?forumChannelId=${encodeURIComponent(forumChannelId)}${userQuery}`,
   ) as Promise<CompetitionPolicy>;
 }
 
