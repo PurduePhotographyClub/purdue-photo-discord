@@ -5,6 +5,7 @@ import {
   buildActiveCompetitionForumOverwrites,
   buildCompetitionStatusMessage,
   buildReadOnlyOverwrites,
+  buildVoteTallyOverwrites,
   COMPETITION_VOTE_EMOJI,
   createCompetitionWinnerMarker,
   normalizeCompetitionForumName,
@@ -206,6 +207,28 @@ test('archive overwrites remove member writes while preserving staff access', ()
   assert.ok(staffOverwrite);
   assert.notEqual(BigInt(staffOverwrite.allow) & 64n, 0n);
   assert.notEqual(BigInt(staffOverwrite.allow) & 274877906944n, 0n);
+});
+
+test('vote tally overwrites temporarily hide the forum from members', () => {
+  const guildId = '1182061172309106708';
+  const inherited = [
+    { allow: String(1_024n | 64n), deny: '0', id: guildId, type: 0 },
+    {
+      allow: String(1_024n | 64n),
+      deny: '0',
+      id: 'restricted-role',
+      type: 0,
+    },
+    { allow: '0', deny: '0', id: DISCORD_ROLE_IDS.admin, type: 0 },
+  ];
+
+  const frozen = buildVoteTallyOverwrites(inherited, guildId);
+  assert.equal(BigInt(frozen[0]!.allow) & 1_024n, 0n);
+  assert.notEqual(BigInt(frozen[0]!.deny) & 1_024n, 0n);
+  assert.equal(BigInt(frozen[1]!.allow) & 1_024n, 0n);
+  assert.notEqual(BigInt(frozen[1]!.deny) & 1_024n, 0n);
+  assert.notEqual(BigInt(frozen[2]!.allow) & 1_024n, 0n);
+  assert.equal(BigInt(frozen[2]!.deny) & 1_024n, 0n);
 });
 
 test('active forum permissions match the competition lifecycle', () => {
@@ -490,13 +513,17 @@ test('closed sync announces results without archiving the forum', async () => {
         request.method === 'PATCH' &&
         new URL(request.url).pathname === forumPath,
     );
-    assert.equal(forumUpdates.length, 3);
+    assert.equal(forumUpdates.length, 4);
     const firstForumBody = await forumUpdates[0]!.clone().json();
     const frozenForumBody = (await forumUpdates[1]!.json()) as Record<
       string,
       unknown
     >;
-    const forumBody = (await forumUpdates[2]!.json()) as Record<
+    const signedFrozenForumBody = (await forumUpdates[2]!.json()) as Record<
+      string,
+      unknown
+    >;
+    const forumBody = (await forumUpdates[3]!.json()) as Record<
       string,
       unknown
     >;
@@ -509,10 +536,29 @@ test('closed sync announces results without archiving the forum', async () => {
       frozenForumBody.topic,
       'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;revision:2',
     );
+    const frozenEveryone = (
+      frozenForumBody.permission_overwrites as Array<{
+        allow: string;
+        deny: string;
+        id: string;
+      }>
+    ).find((overwrite) => overwrite.id === '1182061172309106708');
+    assert.ok(frozenEveryone);
+    assert.notEqual(BigInt(frozenEveryone.deny) & 1_024n, 0n);
     assert.match(
-      String(forumBody.topic),
+      String(signedFrozenForumBody.topic),
       /^pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;winners:423456789012345678;signature:[a-f0-9]{64};revision:2$/,
     );
+    assert.equal(forumBody.topic, signedFrozenForumBody.topic);
+    const revealedEveryone = (
+      forumBody.permission_overwrites as Array<{
+        allow: string;
+        deny: string;
+        id: string;
+      }>
+    ).find((overwrite) => overwrite.id === '1182061172309106708');
+    assert.ok(revealedEveryone);
+    assert.equal(BigInt(revealedEveryone.deny) & 1_024n, 0n);
     const successfulFreezeIndex = requests.indexOf(forumUpdates[1]!);
     const voteReadIndex = requests.findIndex(
       (request) =>
@@ -536,6 +582,10 @@ test('closed sync announces results without archiving the forum', async () => {
           '/api/v10/channels/623456789012345678/messages/523456789012345678',
     );
     assert.ok(statusMessageUpdate);
+    assert.ok(
+      requests.indexOf(statusMessageUpdate) <
+        requests.indexOf(forumUpdates[3]!),
+    );
     const statusMessage = (await statusMessageUpdate.json()) as {
       embeds?: Array<{ fields?: Array<{ name?: string; value?: string }> }>;
     };
@@ -552,6 +602,14 @@ test('closed sync announces results without archiving the forum', async () => {
           request.url.endsWith(`/reactions/${encodeURIComponent('1️⃣')}/@me`),
       ).length,
       1,
+    );
+    assert.equal(
+      requests.some(
+        (request) =>
+          request.method === 'DELETE' &&
+          new URL(request.url).pathname.endsWith('/reactions'),
+      ),
+      false,
     );
   } finally {
     globalThis.fetch = originalFetch;
