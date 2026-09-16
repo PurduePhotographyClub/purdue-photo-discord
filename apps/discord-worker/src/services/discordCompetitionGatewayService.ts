@@ -2,6 +2,8 @@ import type { GatewayInternalEvent } from '@pccbot/shared';
 import { DISCORD_CHANNEL_IDS } from '../config/discord-channel-ids';
 import { discordApiRequest } from '../discord/api';
 import type { Env } from '../discord/types';
+import { DiscordApiError } from '../utils/errors';
+import { COMPETITION_VOTE_EMOJI } from './discordCompetitionService';
 import { requestWebsiteApi } from './websiteApiService';
 
 interface CompetitionPolicy {
@@ -123,6 +125,12 @@ async function handleCompetitionReaction(
   const messageId = event.messageId;
   const userId = event.userId;
   if (!threadId || !messageId || !userId) return { handled: true };
+  if (
+    userId === env.DISCORD_APPLICATION_ID ||
+    readBoolean(readRecord(event.payload.user)?.bot)
+  ) {
+    return { handled: true };
+  }
 
   const canReact = await requestWebsiteApi(
     env,
@@ -131,7 +139,10 @@ async function handleCompetitionReaction(
     .then((response) => {
       const policy = response as CompetitionPolicy;
       return Boolean(
-        policy.canReact && policy.isEntry && messageId === threadId,
+        policy.canReact &&
+        policy.isEntry &&
+        messageId === threadId &&
+        isCompetitionVoteEmoji(readEmoji(event.payload.emoji)),
       );
     })
     .catch(() => false);
@@ -141,11 +152,17 @@ async function handleCompetitionReaction(
 
   const emoji = readEmoji(event.payload.emoji);
   if (emoji) {
-    await discordApiRequest(
-      env,
-      `/channels/${threadId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/${userId}`,
-      { method: 'DELETE' },
-    );
+    try {
+      await discordApiRequest(
+        env,
+        `/channels/${threadId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/${userId}`,
+        { method: 'DELETE' },
+      );
+    } catch (error) {
+      if (!(error instanceof DiscordApiError) || error.status !== 404) {
+        throw error;
+      }
+    }
   }
   return { handled: true };
 }
@@ -212,9 +229,24 @@ function readEmoji(value: unknown) {
   return name ? (id ? `${name}:${id}` : name) : null;
 }
 
+function isCompetitionVoteEmoji(emoji: string | null) {
+  return (
+    emoji?.replaceAll('\uFE0F', '') ===
+    COMPETITION_VOTE_EMOJI.replaceAll('\uFE0F', '')
+  );
+}
+
 function readDiscordDisplayName(value: unknown) {
   if (!isRecord(value)) return null;
   return readString(value.global_name) ?? readString(value.username);
+}
+
+function readRecord(value: unknown) {
+  return isRecord(value) ? value : null;
+}
+
+function readBoolean(value: unknown) {
+  return typeof value === 'boolean' ? value : null;
 }
 
 function readString(value: unknown) {

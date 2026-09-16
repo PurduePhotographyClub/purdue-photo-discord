@@ -103,7 +103,6 @@ async function handleInternalEventsRequest(
 function isSchedulingEvent(parsedEvent: ParsedInternalEvent) {
   return (
     parsedEvent.kind === 'competitionDelete' ||
-    parsedEvent.kind === 'competitionSync' ||
     parsedEvent.kind === 'darkroomSchedule' ||
     parsedEvent.kind === 'darkroomWeeklyJoinMessage' ||
     parsedEvent.kind === 'scheduledEvent' ||
