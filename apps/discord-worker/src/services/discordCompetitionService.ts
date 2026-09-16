@@ -1,6 +1,10 @@
-import { discordApiRequest } from '../discord/api';
+import {
+  discordApiRequest,
+  retryDiscordRateLimitedOperation,
+} from '../discord/api';
 import type { Env } from '../discord/types';
 import { DISCORD_CHANNEL_IDS } from '../config/discord-channel-ids';
+import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import { getRequiredEnv } from '../utils/env';
 import type { CompetitionSyncInternalEvent } from '../internal-events/types';
 import { DiscordApiError } from '../utils/errors';
@@ -15,6 +19,7 @@ interface DiscordPermissionOverwrite {
 }
 
 interface DiscordChannel {
+  guild_id?: string;
   id: string;
   message?: { id?: string };
   name?: string;
@@ -24,13 +29,29 @@ interface DiscordChannel {
   type?: number;
 }
 
+interface DiscordMessage {
+  reactions?: Array<{
+    emoji?: { id?: string | null; name?: string | null };
+  }>;
+}
+
 interface DiscordThreadList {
   threads?: DiscordChannel[];
 }
 
 const FORUM_CHANNEL_TYPE = 15;
+const ADD_REACTIONS_PERMISSION = 64n;
+const SEND_MESSAGES_PERMISSION = 2_048n;
+const CREATE_PUBLIC_THREADS_PERMISSION = 34_359_738_368n;
+const CREATE_PRIVATE_THREADS_PERMISSION = 68_719_476_736n;
+const SEND_MESSAGES_IN_THREADS_PERMISSION = 274_877_906_944n;
 const WRITE_AND_REACTION_PERMISSIONS =
-  64n | 2_048n | 34_359_738_368n | 68_719_476_736n | 274_877_906_944n;
+  ADD_REACTIONS_PERMISSION |
+  SEND_MESSAGES_PERMISSION |
+  CREATE_PUBLIC_THREADS_PERMISSION |
+  CREATE_PRIVATE_THREADS_PERMISSION |
+  SEND_MESSAGES_IN_THREADS_PERMISSION;
+export const COMPETITION_VOTE_EMOJI = '❤️';
 const PLACEMENT_EMOJI: Record<number, string> = {
   1: '1️⃣',
   2: '2️⃣',
@@ -42,7 +63,7 @@ export async function deleteDiscordCompetition(
   forumChannelId: string,
 ) {
   try {
-    await discordApiRequest(env, `/channels/${forumChannelId}`, {
+    await competitionDiscordRequest(env, `/channels/${forumChannelId}`, {
       method: 'DELETE',
     });
   } catch (error) {
@@ -57,18 +78,29 @@ export async function syncDiscordCompetition(
 ) {
   const projection = event.competition;
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
+  const botUserId = getRequiredEnv(env, 'DISCORD_APPLICATION_ID');
   const baseMarker = `pcc-competition:${projection.id}`;
   const marker = `${baseMarker};revision:${projection.syncRevision}`;
   let forum = await findCompetitionForum(env, guildId, projection, baseMarker);
+  const activePermissionOverwrites =
+    projection.status === 'closed'
+      ? undefined
+      : await getActiveCompetitionPermissionOverwrites(
+          env,
+          guildId,
+          botUserId,
+          projection.status,
+        );
 
   if (!forum) {
-    forum = await discordApiRequest<DiscordChannel>(
+    forum = await competitionDiscordRequest<DiscordChannel>(
       env,
       `/guilds/${guildId}/channels`,
       {
         body: JSON.stringify({
           name: normalizeCompetitionForumName(projection.title),
           parent_id: DISCORD_CHANNEL_IDS.competitionActiveCategory,
+          permission_overwrites: activePermissionOverwrites,
           topic: marker,
           type: FORUM_CHANNEL_TYPE,
         }),
@@ -86,6 +118,7 @@ export async function syncDiscordCompetition(
     forum,
     projection,
     marker,
+    activePermissionOverwrites,
   );
   const status = await upsertCompetitionStatusPost(
     env,
@@ -94,11 +127,20 @@ export async function syncDiscordCompetition(
     projection,
   );
 
+  if (projection.status === 'open') {
+    await reconcileCompetitionEntryReactions(env, activeForum.id, projection);
+  }
+
+  if (projection.status === 'judging') {
+    await reconcileCompetitionEntryReactions(env, activeForum.id, projection);
+  }
+
   if (projection.status === 'closed') {
-    await addPlacementReactions(env, projection);
+    await reconcileCompetitionEntryReactions(env, activeForum.id, projection);
     await archiveCompetitionForum(
       env,
       guildId,
+      botUserId,
       activeForum.id,
       projection.title,
       marker,
@@ -139,7 +181,10 @@ export function buildCompetitionStatusContent(
   ];
 
   if (projection.status === 'judging') {
-    lines.push('', 'Voting is open. React to individual entry posts to vote.');
+    lines.push(
+      '',
+      `Voting is open. Use ${COMPETITION_VOTE_EMOJI} on an entry post to vote.`,
+    );
   }
   if (projection.status === 'closed' && projection.results.length > 0) {
     const guildId = '1182061172309106708';
@@ -169,16 +214,113 @@ export function normalizeCompetitionForumName(title: string) {
 
 export function buildReadOnlyOverwrites(
   overwrites: DiscordPermissionOverwrite[],
+  guildId: string,
+  botUserId?: string,
 ): DiscordPermissionOverwrite[] {
-  return overwrites.map((overwrite) => ({
+  return buildCompetitionPermissionOverwrites(
+    overwrites,
+    guildId,
+    botUserId,
+    0n,
+    WRITE_AND_REACTION_PERMISSIONS,
+  );
+}
+
+export function buildActiveCompetitionForumOverwrites(
+  overwrites: DiscordPermissionOverwrite[],
+  guildId: string,
+  status: 'draft' | 'judging' | 'open',
+  botUserId?: string,
+): DiscordPermissionOverwrite[] {
+  return buildCompetitionPermissionOverwrites(
+    overwrites,
+    guildId,
+    botUserId,
+    status === 'open' ? SEND_MESSAGES_PERMISSION : 0n,
+    status === 'open'
+      ? WRITE_AND_REACTION_PERMISSIONS & ~SEND_MESSAGES_PERMISSION
+      : WRITE_AND_REACTION_PERMISSIONS,
+  );
+}
+
+function buildCompetitionPermissionOverwrites(
+  overwrites: DiscordPermissionOverwrite[],
+  guildId: string,
+  botUserId: string | undefined,
+  memberAllow: bigint,
+  memberDeny: bigint,
+) {
+  const privileged = new Map<string, number>([
+    [DISCORD_ROLE_IDS.admin, 0],
+    [DISCORD_ROLE_IDS.executive, 0],
+    ...(botUserId ? ([[botUserId, 1]] as const) : []),
+  ]);
+  const byKey = new Map(
+    overwrites.map((overwrite) => [
+      `${overwrite.type}:${overwrite.id}`,
+      { ...overwrite },
+    ]),
+  );
+
+  byKey.set(
+    `0:${guildId}`,
+    applyControlledPermissions(
+      byKey.get(`0:${guildId}`) ?? {
+        allow: '0',
+        deny: '0',
+        id: guildId,
+        type: 0,
+      },
+      memberAllow,
+      memberDeny,
+    ),
+  );
+
+  for (const [key, overwrite] of byKey) {
+    if (
+      key === `0:${guildId}` ||
+      privileged.get(overwrite.id) === overwrite.type
+    ) {
+      continue;
+    }
+    byKey.set(key, {
+      ...overwrite,
+      allow: String(
+        BigInt(overwrite.allow || '0') & ~WRITE_AND_REACTION_PERMISSIONS,
+      ),
+    });
+  }
+
+  for (const [id, type] of privileged) {
+    const key = `${type}:${id}`;
+    byKey.set(
+      key,
+      applyControlledPermissions(
+        byKey.get(key) ?? { allow: '0', deny: '0', id, type },
+        WRITE_AND_REACTION_PERMISSIONS,
+        0n,
+      ),
+    );
+  }
+
+  return [...byKey.values()];
+}
+
+function applyControlledPermissions(
+  overwrite: DiscordPermissionOverwrite,
+  allow: bigint,
+  deny: bigint,
+) {
+  return {
     ...overwrite,
     allow: String(
-      BigInt(overwrite.allow || '0') & ~WRITE_AND_REACTION_PERMISSIONS,
+      (BigInt(overwrite.allow || '0') & ~WRITE_AND_REACTION_PERMISSIONS) |
+        allow,
     ),
     deny: String(
-      BigInt(overwrite.deny || '0') | WRITE_AND_REACTION_PERMISSIONS,
+      (BigInt(overwrite.deny || '0') & ~WRITE_AND_REACTION_PERMISSIONS) | deny,
     ),
-  }));
+  };
 }
 
 async function findCompetitionForum(
@@ -188,12 +330,14 @@ async function findCompetitionForum(
   marker: string,
 ) {
   if (projection.forumChannelId) {
-    return discordApiRequest<DiscordChannel>(
+    const forum = await competitionDiscordRequest<DiscordChannel>(
       env,
       `/channels/${projection.forumChannelId}`,
     );
+    assertCompetitionForum(forum, guildId, marker);
+    return forum;
   }
-  const channels = await discordApiRequest<DiscordChannel[]>(
+  const channels = await competitionDiscordRequest<DiscordChannel[]>(
     env,
     `/guilds/${guildId}/channels`,
   );
@@ -207,25 +351,71 @@ async function findCompetitionForum(
   return matches[0];
 }
 
+function assertCompetitionForum(
+  forum: DiscordChannel,
+  guildId: string,
+  marker: string,
+) {
+  const allowedCategories = new Set<string>([
+    DISCORD_CHANNEL_IDS.competitionActiveCategory,
+    DISCORD_CHANNEL_IDS.competitionArchiveCategory,
+  ]);
+  if (
+    forum.guild_id !== guildId ||
+    forum.type !== FORUM_CHANNEL_TYPE ||
+    !forum.topic?.startsWith(marker) ||
+    !forum.parent_id ||
+    !allowedCategories.has(forum.parent_id)
+  ) {
+    throw new Error('Discord competition forum identity did not match.');
+  }
+}
+
 async function updateCompetitionForum(
   env: Env,
   forum: DiscordChannel,
   projection: CompetitionProjection,
   marker: string,
+  activePermissionOverwrites: DiscordPermissionOverwrite[] | undefined,
 ) {
   const body: Record<string, unknown> = {
     default_reaction_emoji:
-      projection.status === 'judging' ? { emoji_name: '❤️' } : null,
+      projection.status === 'judging'
+        ? { emoji_name: COMPETITION_VOTE_EMOJI }
+        : null,
     name: normalizeCompetitionForumName(projection.title),
     topic: marker,
   };
   if (projection.status !== 'closed') {
     body.parent_id = DISCORD_CHANNEL_IDS.competitionActiveCategory;
+    body.permission_overwrites = activePermissionOverwrites;
   }
-  return discordApiRequest<DiscordChannel>(env, `/channels/${forum.id}`, {
-    body: JSON.stringify(body),
-    method: 'PATCH',
-  });
+  return competitionDiscordRequest<DiscordChannel>(
+    env,
+    `/channels/${forum.id}`,
+    {
+      body: JSON.stringify(body),
+      method: 'PATCH',
+    },
+  );
+}
+
+async function getActiveCompetitionPermissionOverwrites(
+  env: Env,
+  guildId: string,
+  botUserId: string,
+  status: 'draft' | 'judging' | 'open',
+) {
+  const activeCategory = await competitionDiscordRequest<DiscordChannel>(
+    env,
+    `/channels/${DISCORD_CHANNEL_IDS.competitionActiveCategory}`,
+  );
+  return buildActiveCompetitionForumOverwrites(
+    activeCategory.permission_overwrites ?? [],
+    guildId,
+    status,
+    botUserId,
+  );
 }
 
 async function upsertCompetitionStatusPost(
@@ -239,11 +429,15 @@ async function upsertCompetitionStatusPost(
     content: buildCompetitionStatusContent(projection),
   };
   if (projection.statusThreadId && projection.statusMessageId) {
-    await discordApiRequest(env, `/channels/${projection.statusThreadId}`, {
-      body: JSON.stringify({ archived: false, flags: 2, locked: false }),
-      method: 'PATCH',
-    });
-    await discordApiRequest(
+    await competitionDiscordRequest(
+      env,
+      `/channels/${projection.statusThreadId}`,
+      {
+        body: JSON.stringify({ archived: false, flags: 2, locked: false }),
+        method: 'PATCH',
+      },
+    );
+    await competitionDiscordRequest(
       env,
       `/channels/${projection.statusThreadId}/messages/${projection.statusMessageId}`,
       { body: JSON.stringify(message), method: 'PATCH' },
@@ -260,11 +454,15 @@ async function upsertCompetitionStatusPost(
     forumChannelId,
   );
   if (existingStatus) {
-    await discordApiRequest(env, `/channels/${existingStatus.threadId}`, {
-      body: JSON.stringify({ archived: false, flags: 2, locked: false }),
-      method: 'PATCH',
-    });
-    await discordApiRequest(
+    await competitionDiscordRequest(
+      env,
+      `/channels/${existingStatus.threadId}`,
+      {
+        body: JSON.stringify({ archived: false, flags: 2, locked: false }),
+        method: 'PATCH',
+      },
+    );
+    await competitionDiscordRequest(
       env,
       `/channels/${existingStatus.threadId}/messages/${existingStatus.messageId}`,
       { body: JSON.stringify(message), method: 'PATCH' },
@@ -272,7 +470,7 @@ async function upsertCompetitionStatusPost(
     return existingStatus;
   }
 
-  const created = await discordApiRequest<DiscordChannel>(
+  const created = await competitionDiscordRequest<DiscordChannel>(
     env,
     `/channels/${forumChannelId}/threads`,
     {
@@ -284,7 +482,7 @@ async function upsertCompetitionStatusPost(
       method: 'POST',
     },
   );
-  await discordApiRequest(env, `/channels/${created.id}`, {
+  await competitionDiscordRequest(env, `/channels/${created.id}`, {
     body: JSON.stringify({ flags: 2 }),
     method: 'PATCH',
   });
@@ -294,33 +492,135 @@ async function upsertCompetitionStatusPost(
   };
 }
 
-async function addPlacementReactions(
+async function reconcileCompetitionEntryReactions(
   env: Env,
+  forumChannelId: string,
   projection: CompetitionProjection,
 ) {
-  for (const result of projection.results) {
-    const emoji = PLACEMENT_EMOJI[result.place];
-    if (!emoji) continue;
-    await discordApiRequest(
+  const placements = new Map(
+    projection.results.map((result) => [
+      `${result.threadId}:${result.messageId}`,
+      result.place,
+    ]),
+  );
+
+  for (const entry of projection.entries) {
+    const thread = await tryCompetitionDiscordRequest<DiscordChannel>(
       env,
-      `/channels/${result.threadId}/messages/${result.messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
-      { method: 'PUT' },
+      `/channels/${entry.threadId}`,
     );
+    if (!thread) continue;
+    if (thread.parent_id !== forumChannelId) {
+      throw new Error('Competition entry does not belong to its forum.');
+    }
+
+    const activeThread = await tryCompetitionDiscordRequest(
+      env,
+      `/channels/${entry.threadId}`,
+      {
+        body: JSON.stringify({ archived: false, locked: false }),
+        method: 'PATCH',
+      },
+    );
+    if (!activeThread) continue;
+
+    if (projection.status === 'judging') {
+      await removeUnexpectedCompetitionReactions(env, entry);
+    } else {
+      await tryCompetitionDiscordRequest(
+        env,
+        `/channels/${entry.threadId}/messages/${entry.messageId}/reactions`,
+        { method: 'DELETE' },
+      );
+    }
+
+    const emoji =
+      projection.status === 'judging'
+        ? COMPETITION_VOTE_EMOJI
+        : projection.status === 'closed'
+          ? PLACEMENT_EMOJI[
+              placements.get(`${entry.threadId}:${entry.messageId}`) ?? 0
+            ]
+          : undefined;
+    if (emoji) {
+      await tryCompetitionDiscordRequest(
+        env,
+        `/channels/${entry.threadId}/messages/${entry.messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+        { method: 'PUT' },
+      );
+    }
+
+    if (projection.status === 'closed') {
+      await tryCompetitionDiscordRequest(env, `/channels/${entry.threadId}`, {
+        body: JSON.stringify({ archived: true, locked: true }),
+        method: 'PATCH',
+      });
+    }
+  }
+}
+
+async function removeUnexpectedCompetitionReactions(
+  env: Env,
+  entry: CompetitionProjection['entries'][number],
+) {
+  const message = await tryCompetitionDiscordRequest<DiscordMessage>(
+    env,
+    `/channels/${entry.threadId}/messages/${entry.messageId}`,
+  );
+  if (!message) return;
+
+  for (const reaction of message.reactions ?? []) {
+    const emoji = formatDiscordReactionEmoji(reaction.emoji);
+    if (!emoji || isCompetitionVoteEmoji(emoji)) continue;
+    await tryCompetitionDiscordRequest(
+      env,
+      `/channels/${entry.threadId}/messages/${entry.messageId}/reactions/${encodeURIComponent(emoji)}`,
+      { method: 'DELETE' },
+    );
+  }
+}
+
+function formatDiscordReactionEmoji(
+  emoji: { id?: string | null; name?: string | null } | undefined,
+) {
+  const name = emoji?.name?.trim();
+  if (!name) return null;
+  return emoji?.id ? `${name}:${emoji.id}` : name;
+}
+
+function isCompetitionVoteEmoji(emoji: string) {
+  return (
+    emoji.replaceAll('\uFE0F', '') ===
+    COMPETITION_VOTE_EMOJI.replaceAll('\uFE0F', '')
+  );
+}
+
+async function tryCompetitionDiscordRequest<T = unknown>(
+  env: Env,
+  path: string,
+  init: RequestInit = {},
+) {
+  try {
+    return await competitionDiscordRequest<T>(env, path, init);
+  } catch (error) {
+    if (error instanceof DiscordApiError && error.status === 404) return null;
+    throw error;
   }
 }
 
 async function archiveCompetitionForum(
   env: Env,
   guildId: string,
+  botUserId: string,
   forumChannelId: string,
   title: string,
   marker: string,
 ) {
-  const archiveCategory = await discordApiRequest<DiscordChannel>(
+  const archiveCategory = await competitionDiscordRequest<DiscordChannel>(
     env,
     `/channels/${DISCORD_CHANNEL_IDS.competitionArchiveCategory}`,
   );
-  await discordApiRequest(env, `/channels/${forumChannelId}`, {
+  await competitionDiscordRequest(env, `/channels/${forumChannelId}`, {
     body: JSON.stringify({
       default_reaction_emoji: null,
       name: normalizeCompetitionForumName(title),
@@ -329,6 +629,8 @@ async function archiveCompetitionForum(
         archiveCategory.permission_overwrites?.length
           ? archiveCategory.permission_overwrites
           : [{ allow: '0', deny: '0', id: guildId, type: 0 }],
+        guildId,
+        botUserId,
       ),
       topic: marker,
     }),
@@ -341,11 +643,11 @@ async function findCompetitionStatusPost(
   guildId: string,
   forumChannelId: string,
 ) {
-  const active = await discordApiRequest<DiscordThreadList>(
+  const active = await competitionDiscordRequest<DiscordThreadList>(
     env,
     `/guilds/${guildId}/threads/active`,
   );
-  const archived = await discordApiRequest<DiscordThreadList>(
+  const archived = await competitionDiscordRequest<DiscordThreadList>(
     env,
     `/channels/${forumChannelId}/threads/archived/public?limit=100`,
   );
@@ -361,6 +663,17 @@ async function findCompetitionStatusPost(
     throw new Error('Multiple competition status posts were found.');
   const thread = matches[0];
   return thread ? { messageId: thread.id, threadId: thread.id } : null;
+}
+
+function competitionDiscordRequest<T>(
+  env: Env,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  return retryDiscordRateLimitedOperation(
+    () => discordApiRequest<T>(env, path, init),
+    { maxRetries: 1, maxRetryDelayMs: 15_000 },
+  );
 }
 
 function readMarkerRevision(topic: string | null | undefined) {

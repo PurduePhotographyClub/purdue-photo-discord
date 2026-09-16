@@ -40,6 +40,11 @@ export interface CompetitionSyncResult {
   title: string;
 }
 
+export interface CompetitionSyncEntry {
+  messageId: string;
+  threadId: string;
+}
+
 export interface CompetitionDeleteInternalEvent {
   forumChannelId: string;
   type: 'website.competition.delete';
@@ -48,6 +53,7 @@ export interface CompetitionDeleteInternalEvent {
 export interface CompetitionSyncInternalEvent {
   competition: {
     description: string | null;
+    entries: CompetitionSyncEntry[];
     forumChannelId: string | null;
     id: string;
     results: CompetitionSyncResult[];

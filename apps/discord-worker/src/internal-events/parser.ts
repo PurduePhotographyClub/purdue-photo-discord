@@ -38,6 +38,7 @@ import type {
   StudioScheduleRequester,
   StudioScheduleSyncInternalEvent,
   CompetitionDeleteInternalEvent,
+  CompetitionSyncEntry,
   CompetitionSyncInternalEvent,
   CompetitionSyncResult,
 } from './types';
@@ -258,6 +259,16 @@ function parseCompetitionSyncEvent(
     );
   }
 
+  const rawEntries = value.entries ?? [];
+  if (!Array.isArray(rawEntries) || rawEntries.length > 100) {
+    throw new BadRequestError(
+      'Competition entries must be an array of up to 100 items.',
+    );
+  }
+  const entries = rawEntries.map((entry) => parseCompetitionEntry(entry));
+  if (new Set(entries.map((entry) => entry.threadId)).size !== entries.length) {
+    throw new BadRequestError('Competition entries must be unique.');
+  }
   const description = readNullableString(value, 'description') ?? null;
   const theme = readNullableString(value, 'theme') ?? null;
   const submissionDeadline =
@@ -273,6 +284,7 @@ function parseCompetitionSyncEvent(
   return {
     competition: {
       description,
+      entries,
       forumChannelId,
       id,
       results,
@@ -286,6 +298,25 @@ function parseCompetitionSyncEvent(
     },
     type: 'website.competition.sync',
   };
+}
+
+function parseCompetitionEntry(value: unknown): CompetitionSyncEntry {
+  if (!isRecord(value)) {
+    throw new BadRequestError('Competition entry is invalid.');
+  }
+  const messageId = readString(value, 'messageId');
+  const threadId = readString(value, 'threadId');
+  if (!messageId || !threadId) {
+    throw new BadRequestError('Competition entry Discord IDs are required.');
+  }
+  assertDiscordSnowflake(messageId, 'Competition entry messageId');
+  assertDiscordSnowflake(threadId, 'Competition entry threadId');
+  if (messageId !== threadId) {
+    throw new BadRequestError(
+      'Competition entries must target their forum starter message.',
+    );
+  }
+  return { messageId, threadId };
 }
 
 function parseCompetitionResult(value: unknown): CompetitionSyncResult {
