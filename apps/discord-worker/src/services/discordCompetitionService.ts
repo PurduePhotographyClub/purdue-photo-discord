@@ -57,6 +57,7 @@ interface DiscordThreadList {
 
 const FORUM_CHANNEL_TYPE = 15;
 const ADD_REACTIONS_PERMISSION = 64n;
+const VIEW_CHANNEL_PERMISSION = 1_024n;
 const SEND_MESSAGES_PERMISSION = 2_048n;
 const CREATE_PUBLIC_THREADS_PERMISSION = 34_359_738_368n;
 const CREATE_PRIVATE_THREADS_PERMISSION = 68_719_476_736n;
@@ -128,16 +129,17 @@ export async function syncDiscordCompetition(
   if (existingRevision > projection.syncRevision) {
     throw new Error('Stale competition sync ignored.');
   }
+  const inheritedOverwrites = forum.permission_overwrites?.length
+    ? forum.permission_overwrites
+    : [{ allow: '0', deny: '0', id: guildId, type: 0 }];
   const forumPermissionOverwrites =
     projection.status === 'closed'
-      ? buildReadOnlyOverwrites(
-          forum.permission_overwrites?.length
-            ? forum.permission_overwrites
-            : [{ allow: '0', deny: '0', id: guildId, type: 0 }],
-          guildId,
-          botUserId,
-        )
+      ? buildReadOnlyOverwrites(inheritedOverwrites, guildId, botUserId)
       : activePermissionOverwrites;
+  const tallyPermissionOverwrites =
+    projection.status === 'closed'
+      ? buildVoteTallyOverwrites(inheritedOverwrites, guildId, botUserId)
+      : undefined;
   let completedProjection = projection;
   let marker = revisionMarker;
   let persistedResults: CompetitionSyncResult[] | null = null;
@@ -161,7 +163,7 @@ export async function syncDiscordCompetition(
     forum,
     projection,
     marker,
-    forumPermissionOverwrites,
+    tallyPermissionOverwrites ?? forumPermissionOverwrites,
   );
 
   if (projection.status === 'closed' && projection.results.length === 0) {
@@ -176,12 +178,13 @@ export async function syncDiscordCompetition(
       winnerMarkerSecret!,
     );
     if (signedMarker !== marker) {
+      marker = signedMarker;
       competitionForum = await updateCompetitionForum(
         env,
         competitionForum,
         completedProjection,
-        signedMarker,
-        forumPermissionOverwrites,
+        marker,
+        tallyPermissionOverwrites,
       );
     }
   }
@@ -197,6 +200,16 @@ export async function syncDiscordCompetition(
       env,
       competitionForum.id,
       completedProjection,
+    );
+  }
+
+  if (completedProjection.status === 'closed') {
+    competitionForum = await updateCompetitionForum(
+      env,
+      competitionForum,
+      completedProjection,
+      marker,
+      forumPermissionOverwrites,
     );
   }
 
@@ -534,6 +547,24 @@ export function buildReadOnlyOverwrites(
   );
 }
 
+export function buildVoteTallyOverwrites(
+  overwrites: DiscordPermissionOverwrite[],
+  guildId: string,
+  botUserId?: string,
+): DiscordPermissionOverwrite[] {
+  const controlledPermissions =
+    VIEW_CHANNEL_PERMISSION | WRITE_AND_REACTION_PERMISSIONS;
+  return buildCompetitionPermissionOverwrites(
+    overwrites,
+    guildId,
+    botUserId,
+    0n,
+    controlledPermissions,
+    controlledPermissions,
+    true,
+  );
+}
+
 export function buildActiveCompetitionForumOverwrites(
   overwrites: DiscordPermissionOverwrite[],
   guildId: string,
@@ -561,6 +592,8 @@ function buildCompetitionPermissionOverwrites(
   botUserId: string | undefined,
   memberAllow: bigint,
   memberDeny: bigint,
+  controlledPermissions = WRITE_AND_REACTION_PERMISSIONS,
+  denyAllNonPrivileged = false,
 ) {
   const privileged = new Map<string, number>([
     [DISCORD_ROLE_IDS.admin, 0],
@@ -585,6 +618,7 @@ function buildCompetitionPermissionOverwrites(
       },
       memberAllow,
       memberDeny,
+      controlledPermissions,
     ),
   );
 
@@ -595,12 +629,22 @@ function buildCompetitionPermissionOverwrites(
     ) {
       continue;
     }
-    byKey.set(key, {
-      ...overwrite,
-      allow: String(
-        BigInt(overwrite.allow || '0') & ~WRITE_AND_REACTION_PERMISSIONS,
-      ),
-    });
+    byKey.set(
+      key,
+      denyAllNonPrivileged
+        ? applyControlledPermissions(
+            overwrite,
+            memberAllow,
+            memberDeny,
+            controlledPermissions,
+          )
+        : {
+            ...overwrite,
+            allow: String(
+              BigInt(overwrite.allow || '0') & ~controlledPermissions,
+            ),
+          },
+    );
   }
 
   for (const [id, type] of privileged) {
@@ -609,8 +653,9 @@ function buildCompetitionPermissionOverwrites(
       key,
       applyControlledPermissions(
         byKey.get(key) ?? { allow: '0', deny: '0', id, type },
-        WRITE_AND_REACTION_PERMISSIONS,
+        controlledPermissions,
         0n,
+        controlledPermissions,
       ),
     );
   }
@@ -622,15 +667,15 @@ function applyControlledPermissions(
   overwrite: DiscordPermissionOverwrite,
   allow: bigint,
   deny: bigint,
+  controlledPermissions = WRITE_AND_REACTION_PERMISSIONS,
 ) {
   return {
     ...overwrite,
     allow: String(
-      (BigInt(overwrite.allow || '0') & ~WRITE_AND_REACTION_PERMISSIONS) |
-        allow,
+      (BigInt(overwrite.allow || '0') & ~controlledPermissions) | allow,
     ),
     deny: String(
-      (BigInt(overwrite.deny || '0') & ~WRITE_AND_REACTION_PERMISSIONS) | deny,
+      (BigInt(overwrite.deny || '0') & ~controlledPermissions) | deny,
     ),
   };
 }
@@ -836,8 +881,22 @@ async function reconcileCompetitionEntryReactions(
         });
     if (!activeThread) continue;
 
+    const placementEmoji =
+      PLACEMENT_EMOJI[
+        placements.get(`${entry.threadId}:${entry.messageId}`) ?? 0
+      ];
     if (projection.status === 'judging') {
-      await removeUnexpectedCompetitionReactions(env, entry);
+      await removeUnexpectedCompetitionReactions(env, entry, [
+        COMPETITION_VOTE_EMOJI,
+      ]);
+    } else if (projection.status === 'closed') {
+      await removeUnexpectedCompetitionReactions(
+        env,
+        entry,
+        [COMPETITION_VOTE_EMOJI, placementEmoji].filter(
+          (emoji): emoji is string => Boolean(emoji),
+        ),
+      );
     } else {
       await tryCompetitionDiscordRequest(
         env,
@@ -850,9 +909,7 @@ async function reconcileCompetitionEntryReactions(
       projection.status === 'judging'
         ? COMPETITION_VOTE_EMOJI
         : projection.status === 'closed'
-          ? PLACEMENT_EMOJI[
-              placements.get(`${entry.threadId}:${entry.messageId}`) ?? 0
-            ]
+          ? placementEmoji
           : undefined;
     if (emoji) {
       await tryCompetitionDiscordRequest(
@@ -874,6 +931,7 @@ async function reconcileCompetitionEntryReactions(
 async function removeUnexpectedCompetitionReactions(
   env: Env,
   entry: CompetitionProjection['entries'][number],
+  allowedEmojis: string[],
 ) {
   const message = await tryCompetitionDiscordRequest<DiscordMessage>(
     env,
@@ -883,7 +941,16 @@ async function removeUnexpectedCompetitionReactions(
 
   for (const reaction of message.reactions ?? []) {
     const emoji = formatDiscordReactionEmoji(reaction.emoji);
-    if (!emoji || isCompetitionVoteEmoji(emoji)) continue;
+    if (
+      !emoji ||
+      allowedEmojis.some(
+        (allowedEmoji) =>
+          emoji.replaceAll('\uFE0F', '') ===
+          allowedEmoji.replaceAll('\uFE0F', ''),
+      )
+    ) {
+      continue;
+    }
     await tryCompetitionDiscordRequest(
       env,
       `/channels/${entry.threadId}/messages/${entry.messageId}/reactions/${encodeURIComponent(emoji)}`,
@@ -898,13 +965,6 @@ function formatDiscordReactionEmoji(
   const name = emoji?.name?.trim();
   if (!name) return null;
   return emoji?.id ? `${name}:${emoji.id}` : name;
-}
-
-function isCompetitionVoteEmoji(emoji: string) {
-  return (
-    emoji.replaceAll('\uFE0F', '') ===
-    COMPETITION_VOTE_EMOJI.replaceAll('\uFE0F', '')
-  );
 }
 
 async function tryCompetitionDiscordRequest<T = unknown>(
