@@ -42,10 +42,13 @@ interface DiscordChannel {
 
 interface DiscordMessage {
   reactions?: Array<{
-    count?: number;
     emoji?: { id?: string | null; name?: string | null };
-    me?: boolean;
   }>;
+}
+
+interface DiscordReactionUser {
+  bot?: boolean;
+  id?: string;
 }
 
 interface DiscordThreadList {
@@ -125,23 +128,6 @@ export async function syncDiscordCompetition(
   if (existingRevision > projection.syncRevision) {
     throw new Error('Stale competition sync ignored.');
   }
-  const completedProjection =
-    projection.status === 'closed' && projection.results.length === 0
-      ? {
-          ...projection,
-          results:
-            readPersistedCompetitionResults(forum.topic, projection.entries) ??
-            (await rankCompetitionEntriesFromDiscord(env, projection)),
-        }
-      : projection;
-  const marker =
-    completedProjection.status === 'closed'
-      ? buildClosedCompetitionMarker(
-          baseMarker,
-          completedProjection.syncRevision,
-          completedProjection.results,
-        )
-      : revisionMarker;
   const forumPermissionOverwrites =
     projection.status === 'closed'
       ? buildReadOnlyOverwrites(
@@ -152,14 +138,53 @@ export async function syncDiscordCompetition(
           botUserId,
         )
       : activePermissionOverwrites;
+  let completedProjection = projection;
+  let marker = revisionMarker;
+  let persistedResults: CompetitionSyncResult[] | null = null;
+  let winnerMarkerSecret: string | null = null;
+  if (projection.status === 'closed' && projection.results.length === 0) {
+    winnerMarkerSecret = getRequiredEnv(env, 'WORKER_SECRET');
+    persistedResults = await readPersistedCompetitionResults(
+      forum.topic,
+      projection.entries,
+      projection.id,
+      projection.syncRevision,
+      winnerMarkerSecret,
+    );
+    if (persistedResults) marker = forum.topic ?? revisionMarker;
+  }
 
-  const competitionForum = await updateCompetitionForum(
+  // Closing freezes voting before the first reaction is counted. If ranking
+  // later fails, the vote reactions remain intact and a retry can recount them.
+  let competitionForum = await updateCompetitionForum(
     env,
     forum,
     projection,
     marker,
     forumPermissionOverwrites,
   );
+
+  if (projection.status === 'closed' && projection.results.length === 0) {
+    const results =
+      persistedResults ??
+      (await rankCompetitionEntriesFromDiscord(env, projection, botUserId));
+    completedProjection = { ...projection, results };
+    const signedMarker = await createCompetitionWinnerMarker(
+      baseMarker,
+      projection.syncRevision,
+      results,
+      winnerMarkerSecret!,
+    );
+    if (signedMarker !== marker) {
+      competitionForum = await updateCompetitionForum(
+        env,
+        competitionForum,
+        completedProjection,
+        signedMarker,
+        forumPermissionOverwrites,
+      );
+    }
+  }
   const status = await upsertCompetitionStatusPost(
     env,
     guildId,
@@ -182,24 +207,51 @@ export async function syncDiscordCompetition(
   };
 }
 
-function buildClosedCompetitionMarker(
+export async function createCompetitionWinnerMarker(
   baseMarker: string,
   syncRevision: number,
   results: CompetitionSyncResult[],
+  secret: string,
 ) {
   const winnerIds = results.map((result) => result.threadId).join(',');
-  return `${baseMarker};winners:${winnerIds || 'none'};revision:${syncRevision}`;
+  const unsignedMarker = `${baseMarker};winners:${winnerIds || 'none'};revision:${syncRevision}`;
+  const signature = await signCompetitionWinnerMarker(unsignedMarker, secret);
+  return `${baseMarker};winners:${winnerIds || 'none'};signature:${signature};revision:${syncRevision}`;
 }
 
-export function readPersistedCompetitionResults(
+export async function readPersistedCompetitionResults(
   topic: string | null | undefined,
   entries: CompetitionEntry[],
-): CompetitionSyncResult[] | null {
-  const winnerMatch = /;winners:([^;]+);revision:\d+$/.exec(topic ?? '');
+  competitionId: string,
+  syncRevision: number,
+  secret: string,
+): Promise<CompetitionSyncResult[] | null> {
+  const winnerMatch =
+    /^pcc-competition:([0-9a-f-]+);winners:([^;]+);signature:([a-f0-9]{64});revision:(\d+)$/.exec(
+      topic ?? '',
+    );
   if (!winnerMatch) return null;
-  if (winnerMatch[1] === 'none') return [];
+  const [, markerCompetitionId, winnerList, signature, markerRevision] =
+    winnerMatch;
+  if (
+    markerCompetitionId !== competitionId ||
+    Number(markerRevision) !== syncRevision
+  ) {
+    return null;
+  }
+  const unsignedMarker = `pcc-competition:${competitionId};winners:${winnerList};revision:${syncRevision}`;
+  if (
+    !(await verifyCompetitionWinnerMarker(
+      unsignedMarker,
+      signature ?? '',
+      secret,
+    ))
+  ) {
+    return null;
+  }
+  if (winnerList === 'none') return [];
 
-  const winnerIds = winnerMatch[1]?.split(',') ?? [];
+  const winnerIds = winnerList?.split(',') ?? [];
   if (
     winnerIds.length === 0 ||
     winnerIds.length > 3 ||
@@ -230,27 +282,13 @@ export function readPersistedCompetitionResults(
 async function rankCompetitionEntriesFromDiscord(
   env: Env,
   projection: CompetitionProjection,
+  botUserId: string,
 ) {
   const entriesWithVotes = [];
   for (const [index, entry] of projection.entries.entries()) {
     const { discordUserId, title } = entry;
     if (!discordUserId || !title) continue;
-    const message = await tryCompetitionDiscordRequest<DiscordMessage>(
-      env,
-      `/channels/${entry.threadId}/messages/${entry.messageId}`,
-    );
-    if (!message) continue;
-    const voteReaction = message.reactions?.find((reaction) => {
-      const emoji = formatDiscordReactionEmoji(reaction.emoji);
-      return emoji ? isCompetitionVoteEmoji(emoji) : false;
-    });
-    const totalReactions = Number.isSafeInteger(voteReaction?.count)
-      ? Math.max(0, voteReaction?.count ?? 0)
-      : 0;
-    const votes = Math.max(
-      0,
-      totalReactions - (voteReaction?.me === true ? 1 : 0),
-    );
+    const votes = await countEligibleCompetitionVotes(env, entry, botUserId);
     if (votes === 0) continue;
     entriesWithVotes.push({
       entry: { ...entry, discordUserId, title },
@@ -260,6 +298,84 @@ async function rankCompetitionEntriesFromDiscord(
   }
 
   return rankCompetitionEntriesByVotes(entriesWithVotes);
+}
+
+async function countEligibleCompetitionVotes(
+  env: Env,
+  entry: CompetitionEntry,
+  botUserId: string,
+) {
+  const pageSize = 100;
+  const maxPages = 100;
+  let after: string | null = null;
+  let users: DiscordReactionUser[] = [];
+
+  for (let pageNumber = 0; pageNumber < maxPages; pageNumber += 1) {
+    const query = new URLSearchParams({ limit: String(pageSize), type: '0' });
+    if (after) query.set('after', after);
+    const page = await tryCompetitionDiscordRequest<DiscordReactionUser[]>(
+      env,
+      `/channels/${entry.threadId}/messages/${entry.messageId}/reactions/${encodeURIComponent(COMPETITION_VOTE_EMOJI)}?${query}`,
+    );
+    if (!page) return 0;
+    users = [...users, ...page];
+    if (page.length < pageSize) break;
+    const lastUserId = page.at(-1)?.id;
+    if (!lastUserId || lastUserId === after) break;
+    after = lastUserId;
+    if (pageNumber === maxPages - 1) {
+      throw new Error('Competition vote count exceeds the supported limit.');
+    }
+  }
+
+  return new Set(
+    users
+      .filter((user) => user.bot !== true && user.id && user.id !== botUserId)
+      .map((user) => user.id),
+  ).size;
+}
+
+async function signCompetitionWinnerMarker(marker: string, secret: string) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { hash: 'SHA-256', name: 'HMAC' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(marker),
+  );
+  return [...new Uint8Array(signature)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function verifyCompetitionWinnerMarker(
+  marker: string,
+  signature: string,
+  secret: string,
+) {
+  if (!/^[a-f0-9]{64}$/.test(signature)) return false;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { hash: 'SHA-256', name: 'HMAC' },
+    false,
+    ['verify'],
+  );
+  const signatureBytes = Uint8Array.from(
+    signature.match(/.{2}/g) ?? [],
+    (byte) => Number.parseInt(byte, 16),
+  );
+  return crypto.subtle.verify(
+    'HMAC',
+    key,
+    signatureBytes,
+    new TextEncoder().encode(marker),
+  );
 }
 
 export function rankCompetitionEntriesByVotes(

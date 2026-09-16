@@ -6,6 +6,7 @@ import {
   buildCompetitionStatusMessage,
   buildReadOnlyOverwrites,
   COMPETITION_VOTE_EMOJI,
+  createCompetitionWinnerMarker,
   normalizeCompetitionForumName,
   rankCompetitionEntriesByVotes,
   readPersistedCompetitionResults,
@@ -115,7 +116,7 @@ test('automatic results publish zero to three entries by member vote count', () 
   );
 });
 
-test('persisted automatic winners survive a retry after vote cleanup', () => {
+test('persisted automatic winners survive a retry and reject tampering', async () => {
   const entries = [
     {
       description: 'A reflected skyline.',
@@ -125,11 +126,25 @@ test('persisted automatic winners survive a retry after vote cleanup', () => {
       title: 'City Reflection',
     },
   ];
+  const marker = await createCompetitionWinnerMarker(
+    'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e',
+    2,
+    [
+      {
+        ...entries[0]!,
+        place: 1,
+      },
+    ],
+    'test-worker-secret',
+  );
 
   assert.deepEqual(
-    readPersistedCompetitionResults(
-      'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;winners:423456789012345678;revision:2',
+    await readPersistedCompetitionResults(
+      marker,
       entries,
+      '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      2,
+      'test-worker-secret',
     ),
     [
       {
@@ -142,12 +157,31 @@ test('persisted automatic winners survive a retry after vote cleanup', () => {
       },
     ],
   );
+  const noWinnerMarker = await createCompetitionWinnerMarker(
+    'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e',
+    2,
+    [],
+    'test-worker-secret',
+  );
   assert.deepEqual(
-    readPersistedCompetitionResults(
-      'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;winners:none;revision:2',
+    await readPersistedCompetitionResults(
+      noWinnerMarker,
       entries,
+      '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      2,
+      'test-worker-secret',
     ),
     [],
+  );
+  assert.equal(
+    await readPersistedCompetitionResults(
+      marker.replace('winners:423456789012345678', 'winners:none'),
+      entries,
+      '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      2,
+      'test-worker-secret',
+    ),
+    null,
   );
 });
 
@@ -391,18 +425,17 @@ test('closed sync announces results without archiving the forum', async () => {
     }
     if (
       url.pathname ===
-        '/api/v10/channels/423456789012345678/messages/423456789012345678' &&
+        `/api/v10/channels/423456789012345678/messages/423456789012345678/reactions/${encodeURIComponent(COMPETITION_VOTE_EMOJI)}` &&
       request.method === 'GET'
     ) {
-      return Response.json({
-        reactions: [
-          {
-            count: 5,
-            emoji: { id: null, name: COMPETITION_VOTE_EMOJI },
-            me: true,
-          },
-        ],
-      });
+      assert.equal(url.searchParams.get('type'), '0');
+      return Response.json([
+        { bot: true, id: '723456789012345678' },
+        { id: '923456789012345671' },
+        { id: '923456789012345672' },
+        { id: '923456789012345673' },
+        { id: '923456789012345674' },
+      ]);
     }
     if (
       url.pathname ===
@@ -423,6 +456,7 @@ test('closed sync announces results without archiving the forum', async () => {
         DISCORD_APPLICATION_ID: '723456789012345678',
         DISCORD_GUILD_ID: '1182061172309106708',
         DISCORD_TOKEN: 'test-token',
+        WORKER_SECRET: 'test-worker-secret',
       } as Env,
       {
         competition: {
@@ -456,21 +490,36 @@ test('closed sync announces results without archiving the forum', async () => {
         request.method === 'PATCH' &&
         new URL(request.url).pathname === forumPath,
     );
-    assert.equal(forumUpdates.length, 2);
+    assert.equal(forumUpdates.length, 3);
     const firstForumBody = await forumUpdates[0]!.clone().json();
-    const forumBody = (await forumUpdates[1]!.json()) as Record<
+    const frozenForumBody = (await forumUpdates[1]!.json()) as Record<
       string,
       unknown
     >;
-    assert.deepEqual(firstForumBody, forumBody);
-    assert.equal(forumBody.default_reaction_emoji, null);
-    assert.equal(forumBody.name, 'september-competition');
-    assert.equal('parent_id' in forumBody, false);
-    assert.ok(Array.isArray(forumBody.permission_overwrites));
+    const forumBody = (await forumUpdates[2]!.json()) as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(firstForumBody, frozenForumBody);
+    assert.equal(frozenForumBody.default_reaction_emoji, null);
+    assert.equal(frozenForumBody.name, 'september-competition');
+    assert.equal('parent_id' in frozenForumBody, false);
+    assert.ok(Array.isArray(frozenForumBody.permission_overwrites));
     assert.equal(
-      forumBody.topic,
-      'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;winners:423456789012345678;revision:2',
+      frozenForumBody.topic,
+      'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;revision:2',
     );
+    assert.match(
+      String(forumBody.topic),
+      /^pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;winners:423456789012345678;signature:[a-f0-9]{64};revision:2$/,
+    );
+    const successfulFreezeIndex = requests.indexOf(forumUpdates[1]!);
+    const voteReadIndex = requests.findIndex(
+      (request) =>
+        request.method === 'GET' &&
+        new URL(request.url).pathname.includes('/reactions/'),
+    );
+    assert.ok(successfulFreezeIndex < voteReadIndex);
     assert.equal(
       requests.some(
         (request) =>
