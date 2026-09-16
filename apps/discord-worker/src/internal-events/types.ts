@@ -50,6 +50,13 @@ export interface CompetitionDeleteInternalEvent {
   type: 'website.competition.delete';
 }
 
+export interface CompetitionArchiveInternalEvent {
+  competitionId: string;
+  forumChannelId: string;
+  syncRevision: number;
+  type: 'website.competition.archive';
+}
+
 export interface CompetitionSyncInternalEvent {
   competition: {
     description: string | null;
@@ -318,6 +325,10 @@ export type MemberRolesInternalEvent =
   | DiscordWebsiteStaffRoleResolveInternalEvent;
 
 export type ParsedInternalEvent =
+  | {
+      event: CompetitionArchiveInternalEvent;
+      kind: 'competitionArchive';
+    }
   | {
       event: CompetitionDeleteInternalEvent;
       kind: 'competitionDelete';

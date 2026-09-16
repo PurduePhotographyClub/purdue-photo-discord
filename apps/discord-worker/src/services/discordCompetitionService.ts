@@ -6,7 +6,10 @@ import type { Env } from '../discord/types';
 import { DISCORD_CHANNEL_IDS } from '../config/discord-channel-ids';
 import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 import { getRequiredEnv } from '../utils/env';
-import type { CompetitionSyncInternalEvent } from '../internal-events/types';
+import type {
+  CompetitionArchiveInternalEvent,
+  CompetitionSyncInternalEvent,
+} from '../internal-events/types';
 import { DiscordApiError } from '../utils/errors';
 import type { DiscordEmbed } from '@pccbot/shared';
 
@@ -26,6 +29,7 @@ interface DiscordChannel {
   name?: string;
   parent_id?: string | null;
   permission_overwrites?: DiscordPermissionOverwrite[];
+  thread_metadata?: { archived?: boolean; locked?: boolean };
   topic?: string | null;
   type?: number;
 }
@@ -113,43 +117,41 @@ export async function syncDiscordCompetition(
   if (existingRevision > projection.syncRevision) {
     throw new Error('Stale competition sync ignored.');
   }
+  const forumPermissionOverwrites =
+    projection.status === 'closed'
+      ? buildReadOnlyOverwrites(
+          forum.permission_overwrites?.length
+            ? forum.permission_overwrites
+            : [{ allow: '0', deny: '0', id: guildId, type: 0 }],
+          guildId,
+          botUserId,
+        )
+      : activePermissionOverwrites;
 
-  const activeForum = await updateCompetitionForum(
+  const competitionForum = await updateCompetitionForum(
     env,
     forum,
     projection,
     marker,
-    activePermissionOverwrites,
+    forumPermissionOverwrites,
   );
   const status = await upsertCompetitionStatusPost(
     env,
     guildId,
-    activeForum.id,
+    competitionForum.id,
     projection,
   );
 
-  if (projection.status === 'open') {
-    await reconcileCompetitionEntryReactions(env, activeForum.id, projection);
-  }
-
-  if (projection.status === 'judging') {
-    await reconcileCompetitionEntryReactions(env, activeForum.id, projection);
-  }
-
-  if (projection.status === 'closed') {
-    await reconcileCompetitionEntryReactions(env, activeForum.id, projection);
-    await archiveCompetitionForum(
+  if (projection.status !== 'draft') {
+    await reconcileCompetitionEntryReactions(
       env,
-      guildId,
-      botUserId,
-      activeForum.id,
-      projection.title,
-      marker,
+      competitionForum.id,
+      projection,
     );
   }
 
   return {
-    forumChannelId: activeForum.id,
+    forumChannelId: competitionForum.id,
     statusMessageId: status.messageId,
     statusThreadId: status.threadId,
   };
@@ -256,7 +258,7 @@ function formatCompetitionResults(
     .sort((a, b) => a.place - b.place)
     .map(
       (result) =>
-        `${PLACEMENT_EMOJI[result.place] ?? `${result.place}.`} [${escapeDiscordText(result.title)}](https://discord.com/channels/${guildId}/${result.threadId}/${result.messageId})`,
+        `${PLACEMENT_EMOJI[result.place] ?? `${result.place}.`} <@${result.discordUserId}> · [${escapeDiscordText(result.title)}](https://discord.com/channels/${guildId}/${result.threadId}/${result.messageId})`,
     )
     .join('\n');
 }
@@ -450,9 +452,11 @@ async function updateCompetitionForum(
     name: normalizeCompetitionForumName(projection.title),
     topic: marker,
   };
+  if (activePermissionOverwrites) {
+    body.permission_overwrites = activePermissionOverwrites;
+  }
   if (projection.status !== 'closed') {
     body.parent_id = DISCORD_CHANNEL_IDS.competitionActiveCategory;
-    body.permission_overwrites = activePermissionOverwrites;
   }
   return competitionDiscordRequest<DiscordChannel>(
     env,
@@ -575,14 +579,15 @@ async function reconcileCompetitionEntryReactions(
       throw new Error('Competition entry does not belong to its forum.');
     }
 
-    const activeThread = await tryCompetitionDiscordRequest(
-      env,
-      `/channels/${entry.threadId}`,
-      {
-        body: JSON.stringify({ archived: false, locked: false }),
-        method: 'PATCH',
-      },
-    );
+    const isActive =
+      thread.thread_metadata?.archived === false &&
+      thread.thread_metadata.locked === false;
+    const activeThread = isActive
+      ? thread
+      : await tryCompetitionDiscordRequest(env, `/channels/${entry.threadId}`, {
+          body: JSON.stringify({ archived: false, locked: false }),
+          method: 'PATCH',
+        });
     if (!activeThread) continue;
 
     if (projection.status === 'judging') {
@@ -669,22 +674,31 @@ async function tryCompetitionDiscordRequest<T = unknown>(
   }
 }
 
-async function archiveCompetitionForum(
+export async function archiveDiscordCompetition(
   env: Env,
-  guildId: string,
-  botUserId: string,
-  forumChannelId: string,
-  title: string,
-  marker: string,
+  event: CompetitionArchiveInternalEvent,
 ) {
+  const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
+  const botUserId = getRequiredEnv(env, 'DISCORD_APPLICATION_ID');
+  const forum = await competitionDiscordRequest<DiscordChannel>(
+    env,
+    `/channels/${event.forumChannelId}`,
+  );
+  assertCompetitionForum(
+    forum,
+    guildId,
+    `pcc-competition:${event.competitionId}`,
+  );
+  if (readMarkerRevision(forum.topic) !== event.syncRevision) {
+    throw new Error('Discord competition forum revision did not match.');
+  }
   const archiveCategory = await competitionDiscordRequest<DiscordChannel>(
     env,
     `/channels/${DISCORD_CHANNEL_IDS.competitionArchiveCategory}`,
   );
-  await competitionDiscordRequest(env, `/channels/${forumChannelId}`, {
+  await competitionDiscordRequest(env, `/channels/${event.forumChannelId}`, {
     body: JSON.stringify({
       default_reaction_emoji: null,
-      name: normalizeCompetitionForumName(title),
       parent_id: DISCORD_CHANNEL_IDS.competitionArchiveCategory,
       permission_overwrites: buildReadOnlyOverwrites(
         archiveCategory.permission_overwrites?.length
@@ -693,10 +707,10 @@ async function archiveCompetitionForum(
         guildId,
         botUserId,
       ),
-      topic: marker,
     }),
     method: 'PATCH',
   });
+  return { forumChannelId: event.forumChannelId };
 }
 
 async function findCompetitionStatusPost(
