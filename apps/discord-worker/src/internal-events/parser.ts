@@ -37,6 +37,7 @@ import type {
   StudioScheduleMessageInternalEvent,
   StudioScheduleRequester,
   StudioScheduleSyncInternalEvent,
+  CompetitionArchiveInternalEvent,
   CompetitionDeleteInternalEvent,
   CompetitionSyncEntry,
   CompetitionSyncInternalEvent,
@@ -62,6 +63,13 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
   }
 
   const type = readString(payload, 'type');
+
+  if (type === 'website.competition.archive') {
+    return {
+      event: parseCompetitionArchiveEvent(payload),
+      kind: 'competitionArchive',
+    };
+  }
 
   if (type === 'website.competition.delete') {
     return {
@@ -198,6 +206,30 @@ export function parseInternalEvent(payload: unknown): ParsedInternalEvent {
   return {
     event: parseMessageEvent(payload, type),
     kind: 'message',
+  };
+}
+
+function parseCompetitionArchiveEvent(
+  value: Record<string, unknown>,
+): CompetitionArchiveInternalEvent {
+  const competitionId = readString(value, 'competitionId');
+  const forumChannelId = readString(value, 'forumChannelId');
+  const syncRevision = readNonNegativeInteger(value, 'syncRevision');
+  if (!competitionId || !isUuid(competitionId)) {
+    throw new BadRequestError('Competition ID must be a UUID.');
+  }
+  if (!forumChannelId) {
+    throw new BadRequestError('Competition forumChannelId is required.');
+  }
+  if (syncRevision === null) {
+    throw new BadRequestError('Competition sync revision is invalid.');
+  }
+  assertDiscordSnowflake(forumChannelId, 'Competition forumChannelId');
+  return {
+    competitionId,
+    forumChannelId,
+    syncRevision,
+    type: 'website.competition.archive',
   };
 }
 

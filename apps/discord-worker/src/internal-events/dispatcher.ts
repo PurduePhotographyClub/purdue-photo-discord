@@ -39,6 +39,7 @@ import { sweepExpiredPhotographerRequests } from '../services/photographerReques
 import { syncMemberReportProjection } from '../services/discordMemberReportService';
 import { expireDiscordEventCarpool } from '../services/discordEventCarpoolService';
 import {
+  archiveDiscordCompetition,
   deleteDiscordCompetition,
   syncDiscordCompetition,
 } from '../services/discordCompetitionService';
@@ -63,6 +64,8 @@ export async function dispatchInternalEvent(
   context?: ExecutionContext,
 ): Promise<Record<string, unknown>> {
   switch (parsedEvent.kind) {
+    case 'competitionArchive':
+      return handleCompetitionArchiveEvent(parsedEvent.event, env);
     case 'competitionDelete':
       return handleCompetitionDeleteEvent(parsedEvent.event, env);
     case 'competitionSync':
@@ -100,6 +103,14 @@ export async function dispatchInternalEvent(
     case 'message':
       return handleMessageEvent(parsedEvent.event, env);
   }
+}
+
+async function handleCompetitionArchiveEvent(
+  event: Extract<ParsedInternalEvent, { kind: 'competitionArchive' }>['event'],
+  env: Env,
+): Promise<Record<string, unknown>> {
+  const result = await archiveDiscordCompetition(env, event);
+  return { ...result, ok: true, type: event.type };
 }
 
 async function handleCompetitionDeleteEvent(

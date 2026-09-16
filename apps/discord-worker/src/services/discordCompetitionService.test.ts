@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  archiveDiscordCompetition,
   buildActiveCompetitionForumOverwrites,
   buildCompetitionStatusMessage,
   buildReadOnlyOverwrites,
@@ -12,6 +13,7 @@ import { parseInternalEvent } from '../internal-events/parser';
 import { handleCompetitionGatewayEvent } from './discordCompetitionGatewayService';
 import type { Env } from '../discord/types';
 import type { GatewayInternalEvent } from '@pccbot/shared';
+import { DISCORD_CHANNEL_IDS } from '../config/discord-channel-ids';
 import { DISCORD_ROLE_IDS } from '../config/discord-role-ids';
 
 test('competition status post uses a structured entry announcement', () => {
@@ -210,6 +212,7 @@ test('open sync clears accepted entry reactions and survives repeated Discord 42
       return Response.json({
         id: '423456789012345678',
         parent_id: '323456789012345678',
+        thread_metadata: { archived: true, locked: true },
       });
     }
     return Response.json({ id: url.pathname.split('/').at(-1) });
@@ -260,6 +263,165 @@ test('open sync clears accepted entry reactions and survives repeated Discord 42
       requestCounts.get(
         'PATCH /api/v10/channels/623456789012345678/messages/523456789012345678',
       ),
+      1,
+    );
+    assert.equal(
+      requestCounts.get('PATCH /api/v10/channels/423456789012345678'),
+      1,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('closed sync announces results without archiving the forum', async () => {
+  const originalFetch = globalThis.fetch;
+  const forumPath = '/api/v10/channels/323456789012345678';
+  const requests: Request[] = [];
+
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    const url = new URL(request.url);
+
+    if (
+      url.pathname === forumPath &&
+      request.method === 'PATCH' &&
+      requests.filter(
+        (candidate) =>
+          candidate.method === 'PATCH' &&
+          new URL(candidate.url).pathname === forumPath,
+      ).length === 1
+    ) {
+      return Response.json(
+        { message: 'You are being rate limited.', retry_after: 0 },
+        { status: 429 },
+      );
+    }
+    if (url.pathname === forumPath && request.method === 'GET') {
+      return Response.json({
+        guild_id: '1182061172309106708',
+        id: '323456789012345678',
+        parent_id: '1512508504081039482',
+        topic:
+          'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;revision:1',
+        type: 15,
+      });
+    }
+    if (
+      url.pathname === '/api/v10/channels/423456789012345678' &&
+      request.method === 'GET'
+    ) {
+      return Response.json({
+        id: '423456789012345678',
+        parent_id: '323456789012345678',
+        thread_metadata: { archived: false, locked: false },
+      });
+    }
+    if (
+      url.pathname ===
+        `/api/v10/channels/${DISCORD_CHANNEL_IDS.competitionArchiveCategory}` &&
+      request.method === 'GET'
+    ) {
+      return Response.json({
+        id: DISCORD_CHANNEL_IDS.competitionArchiveCategory,
+        permission_overwrites: [],
+      });
+    }
+    return Response.json({ id: url.pathname.split('/').at(-1) });
+  };
+
+  try {
+    await syncDiscordCompetition(
+      {
+        DISCORD_APPLICATION_ID: '723456789012345678',
+        DISCORD_GUILD_ID: '1182061172309106708',
+        DISCORD_TOKEN: 'test-token',
+      } as Env,
+      {
+        competition: {
+          description: null,
+          entries: [
+            {
+              messageId: '423456789012345678',
+              threadId: '423456789012345678',
+            },
+          ],
+          forumChannelId: '323456789012345678',
+          id: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+          results: [
+            {
+              description: 'A reflected skyline.',
+              discordUserId: '823456789012345678',
+              messageId: '423456789012345678',
+              place: 1,
+              threadId: '423456789012345678',
+              title: 'City Reflection',
+            },
+          ],
+          status: 'closed',
+          statusMessageId: '523456789012345678',
+          statusThreadId: '623456789012345678',
+          submissionDeadline: '2026-09-30',
+          syncRevision: 2,
+          theme: 'Reflections',
+          title: 'September Competition',
+        },
+        type: 'website.competition.sync',
+      },
+    );
+
+    const forumUpdates = requests.filter(
+      (request) =>
+        request.method === 'PATCH' &&
+        new URL(request.url).pathname === forumPath,
+    );
+    assert.equal(forumUpdates.length, 2);
+    const firstForumBody = await forumUpdates[0]!.clone().json();
+    const forumBody = (await forumUpdates[1]!.json()) as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(firstForumBody, forumBody);
+    assert.equal(forumBody.default_reaction_emoji, null);
+    assert.equal(forumBody.name, 'september-competition');
+    assert.equal('parent_id' in forumBody, false);
+    assert.ok(Array.isArray(forumBody.permission_overwrites));
+    assert.equal(
+      forumBody.topic,
+      'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;revision:2',
+    );
+    assert.equal(
+      requests.some(
+        (request) =>
+          request.method === 'GET' &&
+          new URL(request.url).pathname ===
+            `/api/v10/channels/${DISCORD_CHANNEL_IDS.competitionArchiveCategory}`,
+      ),
+      false,
+    );
+    const statusMessageUpdate = requests.find(
+      (request) =>
+        request.method === 'PATCH' &&
+        new URL(request.url).pathname ===
+          '/api/v10/channels/623456789012345678/messages/523456789012345678',
+    );
+    assert.ok(statusMessageUpdate);
+    const statusMessage = (await statusMessageUpdate.json()) as {
+      embeds?: Array<{ fields?: Array<{ name?: string; value?: string }> }>;
+    };
+    const resultsField = statusMessage.embeds?.[0]?.fields?.find(
+      (field) => field.name === 'Results',
+    );
+    assert.match(resultsField?.value ?? '', /City Reflection/);
+    assert.match(resultsField?.value ?? '', /423456789012345678/);
+    assert.match(resultsField?.value ?? '', /<@823456789012345678>/);
+    assert.equal(
+      requests.filter(
+        (request) =>
+          request.method === 'PUT' &&
+          request.url.endsWith(`/reactions/${encodeURIComponent('1️⃣')}/@me`),
+      ).length,
       1,
     );
   } finally {
@@ -396,6 +558,7 @@ test('judging clears reactions and seeds the defined vote on available entries',
       return Response.json({
         id: '423456789012345678',
         parent_id: '323456789012345678',
+        thread_metadata: { archived: false, locked: false },
       });
     }
     if (
@@ -477,17 +640,13 @@ test('judging clears reactions and seeds the defined vote on available entries',
       cleanupRequests[0]!.url,
       new RegExp(encodeURIComponent(COMPETITION_VOTE_EMOJI)),
     );
-    const entryUnarchive = requests.find(
+    const entryUnarchives = requests.filter(
       (request) =>
         request.method === 'PATCH' &&
         new URL(request.url).pathname ===
           '/api/v10/channels/423456789012345678',
     );
-    assert.ok(entryUnarchive);
-    assert.deepEqual(await entryUnarchive.json(), {
-      archived: false,
-      locked: false,
-    });
+    assert.equal(entryUnarchives.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -514,6 +673,118 @@ test('competition deletion accepts only a Discord forum snowflake', () => {
         type: 'website.competition.delete',
       }),
     /forumChannelId/,
+  );
+});
+
+test('competition archiving validates the forum and moves it to the archive category', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Request[] = [];
+
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    const url = new URL(request.url);
+
+    if (
+      url.pathname === '/api/v10/channels/323456789012345678' &&
+      request.method === 'GET'
+    ) {
+      return Response.json({
+        guild_id: '1182061172309106708',
+        id: '323456789012345678',
+        parent_id: DISCORD_CHANNEL_IDS.competitionActiveCategory,
+        topic:
+          'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;revision:2',
+        type: 15,
+      });
+    }
+    if (
+      url.pathname ===
+        `/api/v10/channels/${DISCORD_CHANNEL_IDS.competitionArchiveCategory}` &&
+      request.method === 'GET'
+    ) {
+      return Response.json({
+        id: DISCORD_CHANNEL_IDS.competitionArchiveCategory,
+        permission_overwrites: [],
+      });
+    }
+    return Response.json({ id: url.pathname.split('/').at(-1) });
+  };
+
+  try {
+    assert.deepEqual(
+      parseInternalEvent({
+        competitionId: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+        forumChannelId: '323456789012345678',
+        syncRevision: 2,
+        type: 'website.competition.archive',
+      }),
+      {
+        event: {
+          competitionId: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+          forumChannelId: '323456789012345678',
+          syncRevision: 2,
+          type: 'website.competition.archive',
+        },
+        kind: 'competitionArchive',
+      },
+    );
+
+    const result = await archiveDiscordCompetition(
+      {
+        DISCORD_APPLICATION_ID: '723456789012345678',
+        DISCORD_GUILD_ID: '1182061172309106708',
+        DISCORD_TOKEN: 'test-token',
+      } as Env,
+      {
+        competitionId: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+        forumChannelId: '323456789012345678',
+        syncRevision: 2,
+        type: 'website.competition.archive',
+      },
+    );
+
+    assert.deepEqual(result, { forumChannelId: '323456789012345678' });
+    const archiveUpdate = requests.find(
+      (request) =>
+        request.method === 'PATCH' &&
+        new URL(request.url).pathname ===
+          '/api/v10/channels/323456789012345678',
+    );
+    assert.ok(archiveUpdate);
+    const body = (await archiveUpdate.json()) as Record<string, unknown>;
+    assert.equal(
+      body.parent_id,
+      DISCORD_CHANNEL_IDS.competitionArchiveCategory,
+    );
+    assert.equal(body.default_reaction_emoji, null);
+    assert.ok(Array.isArray(body.permission_overwrites));
+    assert.equal('name' in body, false);
+    assert.equal('topic' in body, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('competition archiving rejects malformed identity and revision fields', () => {
+  const valid = {
+    competitionId: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+    forumChannelId: '323456789012345678',
+    syncRevision: 2,
+    type: 'website.competition.archive',
+  };
+
+  assert.throws(
+    () => parseInternalEvent({ ...valid, competitionId: 'competition-1' }),
+    /Competition ID/,
+  );
+  assert.throws(
+    () => parseInternalEvent({ ...valid, forumChannelId: 'not-a-channel' }),
+    /forumChannelId/,
+  );
+  assert.throws(
+    () => parseInternalEvent({ ...valid, syncRevision: -1 }),
+    /sync revision/,
   );
 });
 

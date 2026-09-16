@@ -102,6 +102,7 @@ async function handleInternalEventsRequest(
 
 function isSchedulingEvent(parsedEvent: ParsedInternalEvent) {
   return (
+    parsedEvent.kind === 'competitionArchive' ||
     parsedEvent.kind === 'competitionDelete' ||
     parsedEvent.kind === 'darkroomSchedule' ||
     parsedEvent.kind === 'darkroomWeeklyJoinMessage' ||
