@@ -6,7 +6,10 @@ import {
   buildCompetitionStatusMessage,
   buildReadOnlyOverwrites,
   COMPETITION_VOTE_EMOJI,
+  createCompetitionWinnerMarker,
   normalizeCompetitionForumName,
+  rankCompetitionEntriesByVotes,
+  readPersistedCompetitionResults,
   syncDiscordCompetition,
 } from './discordCompetitionService';
 import { parseInternalEvent } from '../internal-events/parser';
@@ -77,6 +80,108 @@ test('voting announcement makes the heart reaction the primary instruction', () 
   assert.match(
     message.embeds[0]?.fields?.at(-1)?.value ?? '',
     new RegExp(COMPETITION_VOTE_EMOJI),
+  );
+});
+
+test('automatic results publish zero to three entries by member vote count', () => {
+  const entry = (suffix: string, title: string) => ({
+    description: '',
+    discordUserId: `8${suffix}`,
+    messageId: `4${suffix}`,
+    threadId: `4${suffix}`,
+    title,
+  });
+  const suffixes = [
+    '23456789012345678',
+    '33456789012345678',
+    '43456789012345678',
+    '53456789012345678',
+  ];
+
+  assert.deepEqual(rankCompetitionEntriesByVotes([]), []);
+  const ranked = rankCompetitionEntriesByVotes([
+    { entry: entry(suffixes[0]!, 'First submitted'), index: 0, votes: 4 },
+    { entry: entry(suffixes[1]!, 'Highest votes'), index: 1, votes: 7 },
+    { entry: entry(suffixes[2]!, 'No votes'), index: 2, votes: 0 },
+    { entry: entry(suffixes[3]!, 'Tied later'), index: 3, votes: 4 },
+  ]);
+
+  assert.deepEqual(
+    ranked.map((result) => [result.place, result.title]),
+    [
+      [1, 'Highest votes'],
+      [2, 'First submitted'],
+      [3, 'Tied later'],
+    ],
+  );
+});
+
+test('persisted automatic winners survive a retry and reject tampering', async () => {
+  const entries = [
+    {
+      description: 'A reflected skyline.',
+      discordUserId: '823456789012345678',
+      messageId: '423456789012345678',
+      threadId: '423456789012345678',
+      title: 'City Reflection',
+    },
+  ];
+  const marker = await createCompetitionWinnerMarker(
+    'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e',
+    2,
+    [
+      {
+        ...entries[0]!,
+        place: 1,
+      },
+    ],
+    'test-worker-secret',
+  );
+
+  assert.deepEqual(
+    await readPersistedCompetitionResults(
+      marker,
+      entries,
+      '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      2,
+      'test-worker-secret',
+    ),
+    [
+      {
+        description: 'A reflected skyline.',
+        discordUserId: '823456789012345678',
+        messageId: '423456789012345678',
+        place: 1,
+        threadId: '423456789012345678',
+        title: 'City Reflection',
+      },
+    ],
+  );
+  const noWinnerMarker = await createCompetitionWinnerMarker(
+    'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e',
+    2,
+    [],
+    'test-worker-secret',
+  );
+  assert.deepEqual(
+    await readPersistedCompetitionResults(
+      noWinnerMarker,
+      entries,
+      '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      2,
+      'test-worker-secret',
+    ),
+    [],
+  );
+  assert.equal(
+    await readPersistedCompetitionResults(
+      marker.replace('winners:423456789012345678', 'winners:none'),
+      entries,
+      '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+      2,
+      'test-worker-secret',
+    ),
+    null,
   );
 });
 
@@ -320,6 +425,20 @@ test('closed sync announces results without archiving the forum', async () => {
     }
     if (
       url.pathname ===
+        `/api/v10/channels/423456789012345678/messages/423456789012345678/reactions/${encodeURIComponent(COMPETITION_VOTE_EMOJI)}` &&
+      request.method === 'GET'
+    ) {
+      assert.equal(url.searchParams.get('type'), '0');
+      return Response.json([
+        { bot: true, id: '723456789012345678' },
+        { id: '923456789012345671' },
+        { id: '923456789012345672' },
+        { id: '923456789012345673' },
+        { id: '923456789012345674' },
+      ]);
+    }
+    if (
+      url.pathname ===
         `/api/v10/channels/${DISCORD_CHANNEL_IDS.competitionArchiveCategory}` &&
       request.method === 'GET'
     ) {
@@ -337,28 +456,23 @@ test('closed sync announces results without archiving the forum', async () => {
         DISCORD_APPLICATION_ID: '723456789012345678',
         DISCORD_GUILD_ID: '1182061172309106708',
         DISCORD_TOKEN: 'test-token',
+        WORKER_SECRET: 'test-worker-secret',
       } as Env,
       {
         competition: {
           description: null,
           entries: [
             {
-              messageId: '423456789012345678',
-              threadId: '423456789012345678',
-            },
-          ],
-          forumChannelId: '323456789012345678',
-          id: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
-          results: [
-            {
               description: 'A reflected skyline.',
               discordUserId: '823456789012345678',
               messageId: '423456789012345678',
-              place: 1,
               threadId: '423456789012345678',
               title: 'City Reflection',
             },
           ],
+          forumChannelId: '323456789012345678',
+          id: '8de260c4-9e0b-4a58-a611-a19ff202c86e',
+          results: [],
           status: 'closed',
           statusMessageId: '523456789012345678',
           statusThreadId: '623456789012345678',
@@ -376,21 +490,36 @@ test('closed sync announces results without archiving the forum', async () => {
         request.method === 'PATCH' &&
         new URL(request.url).pathname === forumPath,
     );
-    assert.equal(forumUpdates.length, 2);
+    assert.equal(forumUpdates.length, 3);
     const firstForumBody = await forumUpdates[0]!.clone().json();
-    const forumBody = (await forumUpdates[1]!.json()) as Record<
+    const frozenForumBody = (await forumUpdates[1]!.json()) as Record<
       string,
       unknown
     >;
-    assert.deepEqual(firstForumBody, forumBody);
-    assert.equal(forumBody.default_reaction_emoji, null);
-    assert.equal(forumBody.name, 'september-competition');
-    assert.equal('parent_id' in forumBody, false);
-    assert.ok(Array.isArray(forumBody.permission_overwrites));
+    const forumBody = (await forumUpdates[2]!.json()) as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(firstForumBody, frozenForumBody);
+    assert.equal(frozenForumBody.default_reaction_emoji, null);
+    assert.equal(frozenForumBody.name, 'september-competition');
+    assert.equal('parent_id' in frozenForumBody, false);
+    assert.ok(Array.isArray(frozenForumBody.permission_overwrites));
     assert.equal(
-      forumBody.topic,
+      frozenForumBody.topic,
       'pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;revision:2',
     );
+    assert.match(
+      String(forumBody.topic),
+      /^pcc-competition:8de260c4-9e0b-4a58-a611-a19ff202c86e;winners:423456789012345678;signature:[a-f0-9]{64};revision:2$/,
+    );
+    const successfulFreezeIndex = requests.indexOf(forumUpdates[1]!);
+    const voteReadIndex = requests.findIndex(
+      (request) =>
+        request.method === 'GET' &&
+        new URL(request.url).pathname.includes('/reactions/'),
+    );
+    assert.ok(successfulFreezeIndex < voteReadIndex);
     assert.equal(
       requests.some(
         (request) =>
@@ -479,6 +608,47 @@ test('competition sync parsing validates accepted entry Discord IDs', () => {
     throw new Error('Expected a competition sync event.');
   }
   assert.deepEqual(parsed.event.competition.entries, event.competition.entries);
+  const eventWithWinnerMetadata = {
+    ...event,
+    competition: {
+      ...event.competition,
+      entries: [
+        {
+          description: 'A reflected skyline.',
+          discordUserId: '823456789012345678',
+          messageId: '423456789012345678',
+          threadId: '423456789012345678',
+          title: 'City Reflection',
+        },
+      ],
+    },
+  };
+  const parsedWithWinnerMetadata = parseInternalEvent(eventWithWinnerMetadata);
+  assert.equal(parsedWithWinnerMetadata.kind, 'competitionSync');
+  if (parsedWithWinnerMetadata.kind !== 'competitionSync') {
+    throw new Error('Expected a competition sync event.');
+  }
+  assert.deepEqual(
+    parsedWithWinnerMetadata.event.competition.entries,
+    eventWithWinnerMetadata.competition.entries,
+  );
+  assert.throws(
+    () =>
+      parseInternalEvent({
+        ...event,
+        competition: {
+          ...event.competition,
+          entries: [
+            {
+              discordUserId: '823456789012345678',
+              messageId: '423456789012345678',
+              threadId: '423456789012345678',
+            },
+          ],
+        },
+      }),
+    /winner metadata is incomplete/,
+  );
   assert.throws(
     () =>
       parseInternalEvent({

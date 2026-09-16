@@ -9,11 +9,17 @@ import { getRequiredEnv } from '../utils/env';
 import type {
   CompetitionArchiveInternalEvent,
   CompetitionSyncInternalEvent,
+  CompetitionSyncResult,
 } from '../internal-events/types';
 import { DiscordApiError } from '../utils/errors';
 import type { DiscordEmbed } from '@pccbot/shared';
 
 type CompetitionProjection = CompetitionSyncInternalEvent['competition'];
+type CompetitionEntry = CompetitionProjection['entries'][number];
+type RankableCompetitionEntry = CompetitionEntry & {
+  discordUserId: string;
+  title: string;
+};
 
 interface DiscordPermissionOverwrite {
   allow: string;
@@ -38,6 +44,11 @@ interface DiscordMessage {
   reactions?: Array<{
     emoji?: { id?: string | null; name?: string | null };
   }>;
+}
+
+interface DiscordReactionUser {
+  bot?: boolean;
+  id?: string;
 }
 
 interface DiscordThreadList {
@@ -85,7 +96,7 @@ export async function syncDiscordCompetition(
   const guildId = getRequiredEnv(env, 'DISCORD_GUILD_ID');
   const botUserId = getRequiredEnv(env, 'DISCORD_APPLICATION_ID');
   const baseMarker = `pcc-competition:${projection.id}`;
-  const marker = `${baseMarker};revision:${projection.syncRevision}`;
+  const revisionMarker = `${baseMarker};revision:${projection.syncRevision}`;
   let forum = await findCompetitionForum(env, guildId, projection, baseMarker);
   const activePermissionOverwrites =
     projection.status === 'closed'
@@ -106,7 +117,7 @@ export async function syncDiscordCompetition(
           name: normalizeCompetitionForumName(projection.title),
           parent_id: DISCORD_CHANNEL_IDS.competitionActiveCategory,
           permission_overwrites: activePermissionOverwrites,
-          topic: marker,
+          topic: revisionMarker,
           type: FORUM_CHANNEL_TYPE,
         }),
         method: 'POST',
@@ -127,26 +138,65 @@ export async function syncDiscordCompetition(
           botUserId,
         )
       : activePermissionOverwrites;
+  let completedProjection = projection;
+  let marker = revisionMarker;
+  let persistedResults: CompetitionSyncResult[] | null = null;
+  let winnerMarkerSecret: string | null = null;
+  if (projection.status === 'closed' && projection.results.length === 0) {
+    winnerMarkerSecret = getRequiredEnv(env, 'WORKER_SECRET');
+    persistedResults = await readPersistedCompetitionResults(
+      forum.topic,
+      projection.entries,
+      projection.id,
+      projection.syncRevision,
+      winnerMarkerSecret,
+    );
+    if (persistedResults) marker = forum.topic ?? revisionMarker;
+  }
 
-  const competitionForum = await updateCompetitionForum(
+  // Closing freezes voting before the first reaction is counted. If ranking
+  // later fails, the vote reactions remain intact and a retry can recount them.
+  let competitionForum = await updateCompetitionForum(
     env,
     forum,
     projection,
     marker,
     forumPermissionOverwrites,
   );
+
+  if (projection.status === 'closed' && projection.results.length === 0) {
+    const results =
+      persistedResults ??
+      (await rankCompetitionEntriesFromDiscord(env, projection, botUserId));
+    completedProjection = { ...projection, results };
+    const signedMarker = await createCompetitionWinnerMarker(
+      baseMarker,
+      projection.syncRevision,
+      results,
+      winnerMarkerSecret!,
+    );
+    if (signedMarker !== marker) {
+      competitionForum = await updateCompetitionForum(
+        env,
+        competitionForum,
+        completedProjection,
+        signedMarker,
+        forumPermissionOverwrites,
+      );
+    }
+  }
   const status = await upsertCompetitionStatusPost(
     env,
     guildId,
     competitionForum.id,
-    projection,
+    completedProjection,
   );
 
-  if (projection.status !== 'draft') {
+  if (completedProjection.status !== 'draft') {
     await reconcileCompetitionEntryReactions(
       env,
       competitionForum.id,
-      projection,
+      completedProjection,
     );
   }
 
@@ -155,6 +205,202 @@ export async function syncDiscordCompetition(
     statusMessageId: status.messageId,
     statusThreadId: status.threadId,
   };
+}
+
+export async function createCompetitionWinnerMarker(
+  baseMarker: string,
+  syncRevision: number,
+  results: CompetitionSyncResult[],
+  secret: string,
+) {
+  const winnerIds = results.map((result) => result.threadId).join(',');
+  const unsignedMarker = `${baseMarker};winners:${winnerIds || 'none'};revision:${syncRevision}`;
+  const signature = await signCompetitionWinnerMarker(unsignedMarker, secret);
+  return `${baseMarker};winners:${winnerIds || 'none'};signature:${signature};revision:${syncRevision}`;
+}
+
+export async function readPersistedCompetitionResults(
+  topic: string | null | undefined,
+  entries: CompetitionEntry[],
+  competitionId: string,
+  syncRevision: number,
+  secret: string,
+): Promise<CompetitionSyncResult[] | null> {
+  const winnerMatch =
+    /^pcc-competition:([0-9a-f-]+);winners:([^;]+);signature:([a-f0-9]{64});revision:(\d+)$/.exec(
+      topic ?? '',
+    );
+  if (!winnerMatch) return null;
+  const [, markerCompetitionId, winnerList, signature, markerRevision] =
+    winnerMatch;
+  if (
+    markerCompetitionId !== competitionId ||
+    Number(markerRevision) !== syncRevision
+  ) {
+    return null;
+  }
+  const unsignedMarker = `pcc-competition:${competitionId};winners:${winnerList};revision:${syncRevision}`;
+  if (
+    !(await verifyCompetitionWinnerMarker(
+      unsignedMarker,
+      signature ?? '',
+      secret,
+    ))
+  ) {
+    return null;
+  }
+  if (winnerList === 'none') return [];
+
+  const winnerIds = winnerList?.split(',') ?? [];
+  if (
+    winnerIds.length === 0 ||
+    winnerIds.length > 3 ||
+    new Set(winnerIds).size !== winnerIds.length
+  ) {
+    return null;
+  }
+
+  const entriesByThread = new Map(
+    entries.map((entry) => [entry.threadId, entry]),
+  );
+  const results: CompetitionSyncResult[] = [];
+  for (const [index, threadId] of winnerIds.entries()) {
+    const entry = entriesByThread.get(threadId);
+    if (!entry?.discordUserId || !entry.title) return null;
+    results.push({
+      description: entry.description ?? '',
+      discordUserId: entry.discordUserId,
+      messageId: entry.messageId,
+      place: (index + 1) as 1 | 2 | 3,
+      threadId: entry.threadId,
+      title: entry.title,
+    });
+  }
+  return results;
+}
+
+async function rankCompetitionEntriesFromDiscord(
+  env: Env,
+  projection: CompetitionProjection,
+  botUserId: string,
+) {
+  const entriesWithVotes = [];
+  for (const [index, entry] of projection.entries.entries()) {
+    const { discordUserId, title } = entry;
+    if (!discordUserId || !title) continue;
+    const votes = await countEligibleCompetitionVotes(env, entry, botUserId);
+    if (votes === 0) continue;
+    entriesWithVotes.push({
+      entry: { ...entry, discordUserId, title },
+      index,
+      votes,
+    });
+  }
+
+  return rankCompetitionEntriesByVotes(entriesWithVotes);
+}
+
+async function countEligibleCompetitionVotes(
+  env: Env,
+  entry: CompetitionEntry,
+  botUserId: string,
+) {
+  const pageSize = 100;
+  const maxPages = 100;
+  let after: string | null = null;
+  let users: DiscordReactionUser[] = [];
+
+  for (let pageNumber = 0; pageNumber < maxPages; pageNumber += 1) {
+    const query = new URLSearchParams({ limit: String(pageSize), type: '0' });
+    if (after) query.set('after', after);
+    const page = await tryCompetitionDiscordRequest<DiscordReactionUser[]>(
+      env,
+      `/channels/${entry.threadId}/messages/${entry.messageId}/reactions/${encodeURIComponent(COMPETITION_VOTE_EMOJI)}?${query}`,
+    );
+    if (!page) return 0;
+    users = [...users, ...page];
+    if (page.length < pageSize) break;
+    const lastUserId = page.at(-1)?.id;
+    if (!lastUserId || lastUserId === after) break;
+    after = lastUserId;
+    if (pageNumber === maxPages - 1) {
+      throw new Error('Competition vote count exceeds the supported limit.');
+    }
+  }
+
+  return new Set(
+    users
+      .filter((user) => user.bot !== true && user.id && user.id !== botUserId)
+      .map((user) => user.id),
+  ).size;
+}
+
+async function signCompetitionWinnerMarker(marker: string, secret: string) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { hash: 'SHA-256', name: 'HMAC' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(marker),
+  );
+  return [...new Uint8Array(signature)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function verifyCompetitionWinnerMarker(
+  marker: string,
+  signature: string,
+  secret: string,
+) {
+  if (!/^[a-f0-9]{64}$/.test(signature)) return false;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { hash: 'SHA-256', name: 'HMAC' },
+    false,
+    ['verify'],
+  );
+  const signatureBytes = Uint8Array.from(
+    signature.match(/.{2}/g) ?? [],
+    (byte) => Number.parseInt(byte, 16),
+  );
+  return crypto.subtle.verify(
+    'HMAC',
+    key,
+    signatureBytes,
+    new TextEncoder().encode(marker),
+  );
+}
+
+export function rankCompetitionEntriesByVotes(
+  entriesWithVotes: Array<{
+    entry: RankableCompetitionEntry;
+    index: number;
+    votes: number;
+  }>,
+): CompetitionSyncResult[] {
+  return entriesWithVotes
+    .filter(({ votes }) => Number.isSafeInteger(votes) && votes > 0)
+    .slice()
+    .sort(
+      (first, second) =>
+        second.votes - first.votes || first.index - second.index,
+    )
+    .slice(0, 3)
+    .map(({ entry }, index) => ({
+      description: entry.description ?? '',
+      discordUserId: entry.discordUserId,
+      messageId: entry.messageId,
+      place: (index + 1) as 1 | 2 | 3,
+      threadId: entry.threadId,
+      title: entry.title,
+    }));
 }
 
 export function buildCompetitionStatusMessage(

@@ -41,8 +41,11 @@ export interface CompetitionSyncResult {
 }
 
 export interface CompetitionSyncEntry {
+  description?: string;
+  discordUserId?: string;
   messageId: string;
   threadId: string;
+  title?: string;
 }
 
 export interface CompetitionDeleteInternalEvent {
