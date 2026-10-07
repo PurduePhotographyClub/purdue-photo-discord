@@ -44,13 +44,14 @@
   "author": "Justin Beckwith <justin.beckwith@gmail.com>",
   "license": "MIT",
   "overrides": {
-    "sharp": "0.35.4",
+    "brace-expansion": "5.0.12",
+    "sharp": "0.35.5",
     "@pccbot/discord-gateway": {
       "discord.js": {
         "@discordjs/rest": {
-          "undici": "6.28.0"
+          "undici": "6.28.1"
         },
-        "undici": "6.28.0"
+        "undici": "6.28.1"
       }
     },
     "esbuild": "0.28.2",
