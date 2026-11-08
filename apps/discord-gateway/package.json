@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@pccbot/shared": "file:../../packages/shared",
-    "discord.js": "^14.27.0"
+    "discord.js": "^14.28.1"
   },
   "engines": {
     "node": ">=22"
